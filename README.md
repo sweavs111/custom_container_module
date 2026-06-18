@@ -6,7 +6,24 @@ Scripts for building and deploying [Apptainer](https://apptainer.org/) container
 
 - Run from a **login node** — Apptainer needs outbound internet access during `%post`
 - `module load apptainer` (handled automatically by `apptainer_build.sh`)
-- `claude` CLI at `/home/sdweave2/.local/bin/claude` (used by the auto-generation scripts)
+- `claude` CLI available on PATH or set as `CLAUDE_BIN` in `config.sh`
+
+## Configuration
+
+Before first use, edit `config.sh` to match your environment:
+
+```bash
+# Path to the container-mod executable
+CONTAINER_MOD="/path/to/container-mod"
+
+# container-mod profile to use for deployment
+CONTAINER_MOD_PROFILE="brc"
+
+# Fallback path to the claude CLI (used if 'claude' is not on PATH)
+CLAUDE_BIN="/home/you/.local/bin/claude"
+```
+
+All three scripts (`apptainer_build.sh`, `create_def_file.sh`, `create_repos_entry.sh`) source `config.sh` automatically.
 
 ## Adding a New Tool
 
@@ -44,6 +61,7 @@ APPTAINER_BINDPATH="" apptainer build <ToolName>/<ToolName>-<Version>.sif <ToolN
 ```
 build_container/
 ├── apptainer_build.sh        # main build/deploy wrapper
+├── config.sh                 # site-specific paths and settings (edit before use)
 ├── create_def_file.sh        # auto-generates .def via Claude + PyPI/GitHub
 ├── create_repos_entry.sh     # auto-generates container-mod metadata via Claude
 ├── template.def              # canonical .def template
