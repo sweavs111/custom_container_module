@@ -12,6 +12,7 @@ export APPTAINER_BINDPATH=""   # required — Hazel's apptainer config sets a bi
 ### --- Edit this section ---
 TOOL="FastAAI"
 DEPLOY=true   # set to false to skip container-mod module generation after build
+GITHUB_URL=""  # optional: set to the exact GitHub URL if auto-search picks the wrong repo
 
 ### --- Derived paths ---
 DEF="tools/${TOOL}/${TOOL}.def"
@@ -20,7 +21,9 @@ REPOS_FILE="$(dirname "$CONTAINER_MOD")/repos/$TOOL_LOWER"
 
 ### --- Pre-flight: generate .def file if missing ---
 if [[ ! -f "$DEF" ]]; then
-    "$(dirname "$0")/create_def_file.sh" "$TOOL" || exit 1
+    create_args=("$TOOL")
+    [[ -n "${GITHUB_URL:-}" ]] && create_args+=(--github-url "$GITHUB_URL")
+    "$(dirname "$0")/create_def_file.sh" "${create_args[@]}" || exit 1
 fi
 
 ### --- Extract version from .def ---

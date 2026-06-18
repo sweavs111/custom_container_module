@@ -2,12 +2,46 @@
 # Generates an Apptainer .def file for a given tool by fetching installation
 # info from PyPI and/or GitHub and synthesizing with Claude.
 #
-# Usage:   create_def_file.sh <ToolName>
+# Usage:   create_def_file.sh <ToolName> [--github-url <URL>]
 # Creates: tools/<ToolName>/<ToolName>.def  (relative to CWD)
+#
+# Options:
+#   --github-url <URL>   Skip GitHub search and use this URL directly.
+#                        Useful when multiple repos share a similar name.
 
 set -euo pipefail
 
-TOOL="$1"
+# --- Argument parsing ---
+TOOL=""
+GITHUB_URL_OVERRIDE=""
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --github-url)
+            GITHUB_URL_OVERRIDE="$2"
+            shift 2
+            ;;
+        --github-url=*)
+            GITHUB_URL_OVERRIDE="${1#*=}"
+            shift
+            ;;
+        -*)
+            echo "ERROR: Unknown option: $1" >&2
+            echo "Usage: create_def_file.sh <ToolName> [--github-url <URL>]" >&2
+            exit 1
+            ;;
+        *)
+            TOOL="$1"
+            shift
+            ;;
+    esac
+done
+
+if [[ -z "$TOOL" ]]; then
+    echo "Usage: create_def_file.sh <ToolName> [--github-url <URL>]" >&2
+    exit 1
+fi
+
 TOOL_LOWER=$(echo "$TOOL" | tr '[:upper:]' '[:lower:]')
 DEF_DIR="./tools/$TOOL"
 DEF_FILE="$DEF_DIR/$TOOL.def"
@@ -57,9 +91,13 @@ print(json.load(sys.stdin)['info'].get('summary') or '')
 " 2>/dev/null || true)
 fi
 
-# --- Extract GitHub URL from PyPI metadata ---
+# --- Determine GitHub URL ---
 GITHUB_URL=""
-if [[ -n "$PYPI_JSON" ]]; then
+
+if [[ -n "$GITHUB_URL_OVERRIDE" ]]; then
+    GITHUB_URL="$GITHUB_URL_OVERRIDE"
+    echo "Using provided GitHub URL: $GITHUB_URL"
+elif [[ -n "$PYPI_JSON" ]]; then
     GITHUB_URL=$(echo "$PYPI_JSON" | python3 -c "
 import json, re, sys
 data = json.load(sys.stdin)
@@ -75,21 +113,50 @@ for url in candidates:
 " 2>/dev/null || true)
 fi
 
-# --- Fallback: GitHub search ---
+# --- Fallback: GitHub search with name-match ranking ---
 if [[ -z "$GITHUB_URL" ]]; then
-    echo "Not found on PyPI — searching GitHub..."
+    echo "Not found on PyPI or no GitHub URL in metadata — searching GitHub..."
     SEARCH_JSON=$(curl -sf \
         -H "Accept: application/vnd.github+json" \
-        "https://api.github.com/search/repositories?q=${TOOL_LOWER}&sort=stars&per_page=5" \
+        "https://api.github.com/search/repositories?q=${TOOL_LOWER}&sort=stars&per_page=10" \
         2>/dev/null || true)
     if [[ -n "$SEARCH_JSON" ]]; then
-        GITHUB_URL=$(echo "$SEARCH_JSON" | python3 -c "
+        # Rank by name similarity: exact > prefix/suffix > contains > other.
+        # Within each tier, prefer higher star count.
+        # Outputs two lines: a status line (OK: or WARN:<msg>), then the URL.
+        SEARCH_RESULT=$(echo "$SEARCH_JSON" | python3 -c "
 import json, sys
 items = json.load(sys.stdin).get('items', [])
-if items:
-    print(items[0].get('html_url', ''))
+tool_lower = '$TOOL_LOWER'
+
+def rank(item):
+    name = item.get('name', '').lower()
+    if name == tool_lower:
+        return 0
+    if name.startswith(tool_lower) or tool_lower.startswith(name):
+        return 1
+    if tool_lower in name:
+        return 2
+    return 3
+
+ranked = sorted(items, key=lambda x: (rank(x), -x.get('stargazers_count', 0)))
+if ranked:
+    best = ranked[0]
+    r = rank(best)
+    if r > 0:
+        print('WARN:no exact name match; using \"{}\" (closest to \"{}\") -- verify or re-run with --github-url'.format(best['name'], tool_lower))
+    else:
+        print('OK:')
+    print(best.get('html_url', ''))
 " 2>/dev/null || true)
-        [[ -n "$GITHUB_URL" ]] && echo "  Found: $GITHUB_URL"
+        if [[ -n "$SEARCH_RESULT" ]]; then
+            MATCH_STATUS=$(echo "$SEARCH_RESULT" | head -1)
+            GITHUB_URL=$(echo "$SEARCH_RESULT" | sed -n '2p')
+            if [[ "$MATCH_STATUS" == WARN:* ]]; then
+                echo "  WARNING: ${MATCH_STATUS#WARN:}" >&2
+            fi
+            [[ -n "$GITHUB_URL" ]] && echo "  Found: $GITHUB_URL"
+        fi
     fi
 fi
 
@@ -113,6 +180,32 @@ if [[ -n "$GITHUB_URL" ]]; then
             break
         fi
     done
+fi
+
+# --- Bioinformatics relevance check ---
+# Aborts early if the discovered tool is clearly not life-sciences related.
+# Fails open (proceeds) if Claude is unreachable or returns an unexpected response.
+if [[ -n "$PYPI_SUMMARY" || -n "$GITHUB_README" ]]; then
+    echo "Checking bioinformatics relevance..."
+    BIO_CONTEXT="Tool: $TOOL"
+    [[ -n "$PYPI_SUMMARY" ]] && BIO_CONTEXT+="
+PyPI summary: $PYPI_SUMMARY"
+    [[ -n "$GITHUB_README" ]] && BIO_CONTEXT+="
+README excerpt:
+$(echo "$GITHUB_README" | head -c 1000)"
+
+    BIO_RESPONSE=$("$CLAUDE" -p "Is the following tool relevant to bioinformatics, genomics, proteomics, metagenomics, transcriptomics, structural biology, computational biology, or life sciences research? Respond with a single word: YES or NO.
+
+$BIO_CONTEXT" 2>/dev/null || true)
+
+    # Fail open: if Claude is unreachable or returns empty, proceed without blocking.
+    if [[ -n "$BIO_RESPONSE" ]] && echo "$BIO_RESPONSE" | grep -qiE '^\s*no\b'; then
+        echo "ERROR: '$TOOL' does not appear to be a bioinformatics tool — discarding." >&2
+        echo "       If the wrong repo was selected, re-run with --github-url <correct-url>." >&2
+        rmdir "$DEF_DIR" 2>/dev/null || true
+        exit 1
+    fi
+    echo "  Confirmed bioinformatics relevance."
 fi
 
 # --- Assemble context ---
