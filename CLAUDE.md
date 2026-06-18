@@ -18,19 +18,19 @@ Builds and deployments must run from a **login node** — Apptainer needs intern
 2. Run `./apptainer_build.sh` from this directory.
 
 `apptainer_build.sh` handles all steps automatically:
-- If `<ToolName>/<ToolName>.def` is missing, calls `create_def_file.sh <ToolName>` to generate it via Claude (fetches PyPI/GitHub info first).
-- Extracts `Version` from the `.def` labels and names the output `<ToolName>/<ToolName>-<Version>.sif`.
+- If `tools/<ToolName>/<ToolName>.def` is missing, calls `create_def_file.sh <ToolName>` to generate it via Claude (fetches PyPI/GitHub info first).
+- Extracts `Version` from the `.def` labels and names the output `tools/<ToolName>/<ToolName>-<Version>.sif`.
 - Appends the full build command trace to `container_build.log`.
 - If `DEPLOY=true` and the container-mod repos metadata file is missing, calls `create_repos_entry.sh` to generate it by parsing the `.def` directly.
 - Copies the SIF to `/usr/local/usrapps/brc/brc_modules/images/` and runs `container-mod pipe` to register the module, then removes the local `.sif`.
 
-**If the auto-generated `.def` needs manual fixes**, edit `<ToolName>/<ToolName>.def` before re-running `apptainer_build.sh`. The script will not overwrite an existing `.def`.
+**If the auto-generated `.def` needs manual fixes**, edit `tools/<ToolName>/<ToolName>.def` before re-running `apptainer_build.sh`. The script will not overwrite an existing `.def`.
 
 ## Manual Build (Without the Wrapper)
 
 ```bash
 module load apptainer
-APPTAINER_BINDPATH="" apptainer build <ToolName>/<ToolName>-<Version>.sif <ToolName>/<ToolName>.def
+APPTAINER_BINDPATH="" apptainer build tools/<ToolName>/<ToolName>-<Version>.sif tools/<ToolName>/<ToolName>.def
 ```
 
 `APPTAINER_BINDPATH=""` is required — Hazel's Apptainer config sets a bind path that breaks builds.
@@ -56,7 +56,7 @@ Start from `template.def`. All sections are required unless noted.
 
 | Script | Purpose |
 |--------|---------|
-| `create_def_file.sh <ToolName>` | Generates `<ToolName>/<ToolName>.def` by querying PyPI/GitHub then prompting Claude. |
+| `create_def_file.sh <ToolName>` | Generates `tools/<ToolName>/<ToolName>.def` by querying PyPI/GitHub then prompting Claude. |
 | `create_repos_entry.sh <def_file> <output_path>` | Generates the container-mod metadata file (Description, Home Page, Programs) by parsing the `.def` directly — no Claude required. |
 
 Both scripts require the `claude` CLI (`/home/sdweave2/.local/bin/claude`) and outbound internet access (login node only).
@@ -64,15 +64,16 @@ Both scripts require the `claude` CLI (`/home/sdweave2/.local/bin/claude`) and o
 ## Repo Layout
 
 ```
-build_container/
+custom_container_module/
 ├── apptainer_build.sh        # main build/deploy wrapper
 ├── create_def_file.sh        # auto-generates .def via Claude + PyPI/GitHub
 ├── create_repos_entry.sh     # auto-generates container-mod metadata by parsing the .def
 ├── template.def              # canonical .def template
 ├── container_build.log       # timestamped build+deploy audit trail
-├── <ToolName>/
-│   ├── <ToolName>.def        # Apptainer definition (source of truth)
-│   └── <ToolName>-<Version>.sif  # built image (not committed to git)
+├── tools/
+│   └── <ToolName>/
+│       ├── <ToolName>.def        # Apptainer definition (source of truth)
+│       └── <ToolName>-<Version>.sif  # built image (not committed to git)
 └── test_container/           # minimal working example
     ├── test.def
     └── scripts/              # files injected into image via %files

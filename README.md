@@ -40,18 +40,18 @@ CLAUDE_BIN="/home/you/.local/bin/claude"
 
 The script handles everything automatically:
 
-- If `<ToolName>/<ToolName>.def` is missing, calls `create_def_file.sh` to generate one via Claude (queries PyPI/GitHub for install info first)
-- Extracts the version from the `.def` labels and names the output `<ToolName>/<ToolName>-<Version>.sif`
+- If `tools/<ToolName>/<ToolName>.def` is missing, calls `create_def_file.sh` to generate one via Claude (queries PyPI/GitHub for install info first)
+- Extracts the version from the `.def` labels and names the output `tools/<ToolName>/<ToolName>-<Version>.sif`
 - Appends a full build command trace to `container_build.log`
 - If `DEPLOY=true`, calls `create_repos_entry.sh` to generate container-mod metadata (if missing), copies the SIF to the shared images directory, registers the module via `container-mod pipe`, then removes the local `.sif`
 
-If the auto-generated `.def` needs manual fixes, edit `<ToolName>/<ToolName>.def` before re-running — the script will not overwrite an existing `.def`.
+If the auto-generated `.def` needs manual fixes, edit `tools/<ToolName>/<ToolName>.def` before re-running — the script will not overwrite an existing `.def`.
 
 ## Manual Build
 
 ```bash
 module load apptainer
-APPTAINER_BINDPATH="" apptainer build <ToolName>/<ToolName>-<Version>.sif <ToolName>/<ToolName>.def
+APPTAINER_BINDPATH="" apptainer build tools/<ToolName>/<ToolName>-<Version>.sif tools/<ToolName>/<ToolName>.def
 ```
 
 `APPTAINER_BINDPATH=""` is required — Hazel's Apptainer config sets a bind path that breaks builds.
@@ -59,14 +59,15 @@ APPTAINER_BINDPATH="" apptainer build <ToolName>/<ToolName>-<Version>.sif <ToolN
 ## Repo Layout
 
 ```
-build_container/
+custom_container_module/
 ├── apptainer_build.sh        # main build/deploy wrapper
 ├── config.sh                 # site-specific paths and settings (edit before use)
 ├── create_def_file.sh        # auto-generates .def via Claude + PyPI/GitHub
 ├── create_repos_entry.sh     # auto-generates container-mod metadata by parsing the .def
 ├── template.def              # canonical .def template
-├── <ToolName>/
-│   └── <ToolName>.def        # Apptainer definition (source of truth)
+├── tools/
+│   └── <ToolName>/
+│       └── <ToolName>.def    # Apptainer definition (source of truth)
 └── test_container/           # minimal working example
     ├── test.def
     └── scripts/              # files injected into image via %files
@@ -104,5 +105,5 @@ pip3 install --no-cache-dir /opt/<Tool>
 
 | Script | Purpose |
 |--------|---------|
-| `create_def_file.sh <ToolName>` | Generates `<ToolName>/<ToolName>.def` by querying PyPI/GitHub then prompting Claude |
+| `create_def_file.sh <ToolName>` | Generates `tools/<ToolName>/<ToolName>.def` by querying PyPI/GitHub then prompting Claude |
 | `create_repos_entry.sh <def_file> <output_path>` | Generates the container-mod metadata file (Description, Home Page, Programs) by parsing the `.def` directly — no Claude required |
