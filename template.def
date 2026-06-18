@@ -1,0 +1,63 @@
+Bootstrap: docker
+From: ubuntu:22.04
+
+# ------------------------------------------------------------
+# TEMPLATE — copy to <ToolName>/<ToolName>.def and fill in
+# all <PLACEHOLDER> values before building.
+# Build: APPTAINER_BINDPATH="" apptainer build <ToolName>/<ToolName>.sif <ToolName>/<ToolName>.def
+# ------------------------------------------------------------
+
+%labels
+    Maintainer sdweave2@ncsu.edu
+    Source <UPSTREAM_URL>
+    Version <VERSION>
+
+%help
+    <TOOL> — <one-line description>
+
+    Usage:
+        apptainer run <ToolName>.sif [options]
+
+    Options:
+        # Document key flags here
+
+    Example:
+        apptainer run <ToolName>.sif --help
+
+%post
+    export DEBIAN_FRONTEND=noninteractive
+
+    # Hazel bind-mount points
+    mkdir -p /rs1 /share /home /usr/local/usrapps
+
+    # System packages — add or remove as needed
+    apt-get update -qq && \
+        apt-get install -y --no-install-recommends \
+            python3 \
+            python3-pip \
+            build-essential \
+            git && \
+        apt-get clean && \
+        rm -rf /var/lib/apt/lists/*
+
+    # Install <TOOL> — uncomment one pattern:
+    #
+    # PyPI release (preferred for reproducibility):
+    #   pip3 install --no-cache-dir <TOOL>==<VERSION>
+    #
+    # GitHub source (use when no PyPI release exists):
+    #   pip3 install --no-cache-dir git+<UPSTREAM_URL>@<TAG_OR_COMMIT>
+    #
+    # Clone + local install (use when setup.py/pyproject.toml is present):
+    #   git clone --branch <TAG> --depth 1 <UPSTREAM_URL> /opt/<TOOL>
+    #   pip3 install --no-cache-dir /opt/<TOOL>
+
+%environment
+    export DEBIAN_FRONTEND=noninteractive
+    # Add PATH or other runtime vars here if needed
+
+%runscript
+    exec <command> "$@"
+
+%test
+    <command> --help

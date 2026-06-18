@@ -1,0 +1,5 @@
+# Built container images
+**/*.sif
+
+# Build audit log
+container_build.log

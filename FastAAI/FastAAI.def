@@ -1,0 +1,55 @@
+Bootstrap: docker
+From: ubuntu:22.04
+
+%labels
+    Maintainer sdweave2@ncsu.edu
+    Source https://github.com/cruizperez/FastAAI
+    Version 0.1.20
+
+%help
+    FastAAI — A rapid estimator for amino acid identity between genomes.
+
+    Usage:
+        apptainer run FastAAI.sif [command] [options]
+
+    Commands:
+        build_db      Predict proteins, identify single-copy proteins, and build a FastAAI database
+        merge_db      Merge two or more FastAAI databases
+        simple_query  Query a set of genomes against a prebuilt FastAAI database
+        db_query      Query one FastAAI database against another (or itself)
+        single_query  Calculate AAI between exactly two genomes
+
+    Options:
+        Run any command without arguments for its usage, e.g.:
+            apptainer run FastAAI.sif build_db
+
+    Example:
+        apptainer run FastAAI.sif build_db --genomes my_genomes/ --threads 4 --output my_build --database my_db.db
+
+%post
+    export DEBIAN_FRONTEND=noninteractive
+
+    # Hazel bind-mount points
+    mkdir -p /rs1 /share /home /usr/local/usrapps
+
+    # System packages
+    apt-get update -qq && \
+        apt-get install -y --no-install-recommends \
+            python3 \
+            python3-pip \
+            build-essential \
+            git && \
+        apt-get clean && \
+        rm -rf /var/lib/apt/lists/*
+
+    # Install FastAAI from PyPI (pyrodigal==1.0.2 pinned by package metadata)
+    pip3 install --no-cache-dir FastAAI==0.1.20
+
+%environment
+    export DEBIAN_FRONTEND=noninteractive
+
+%runscript
+    exec fastaai "$@"
+
+%test
+    fastaai --help

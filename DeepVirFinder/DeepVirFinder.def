@@ -1,0 +1,69 @@
+Bootstrap: docker
+From: continuumio/miniconda3:4.12.0
+
+%labels
+    Maintainer sdweave2@ncsu.edu
+    Source https://github.com/jessieren/DeepVirFinder
+    Version 1.0
+
+%help
+    DeepVirFinder — identifies viral sequences in metagenomic data using deep learning.
+
+    Usage:
+        apptainer run deepvirfinder.sif -i <input.fa> [-o <output_dir>] [-l <min_len>] [-c <cores>] [-m <model_dir>]
+
+    Options:
+        -i  Input FASTA file (required)
+        -o  Output directory (default: same directory as input)
+        -l  Minimum sequence length to predict, bp (default: 1)
+        -c  Number of parallel cores (default: 1)
+        -m  Model directory (default: /opt/DeepVirFinder/models)
+
+    Example:
+        apptainer run deepvirfinder.sif -i contigs.fa -o results/ -l 300 -c 4
+
+%post
+    export DEBIAN_FRONTEND=noninteractive
+
+    # System packages needed for git clone and conda build
+    apt-get update -q && \
+        apt-get install -y -q --no-install-recommends git && \
+        apt-get clean && \
+        rm -rf /var/lib/apt/lists/*
+
+    # Create a conda environment matching the pinned versions in the README.
+    # Pinning theano=1.0.3, keras=2.2.4, h5py=2.10.0, and mkl-service=2.4.0
+    # is critical — newer versions of these packages are incompatible with the
+    # Theano-backend Keras workflow used by dvf.py.
+    conda create -n dvf -y \
+        -c defaults -c conda-forge \
+        python=3.6 \
+        numpy \
+        "theano=1.0.3" \
+        "keras=2.2.4" \
+        scikit-learn \
+        biopython \
+        "h5py=2.10.0" \
+        "mkl-service=2.4.0"
+
+    conda clean -afy
+
+    # Clone the tool and bundle the pre-trained models inside the image
+    git clone https://github.com/jessieren/DeepVirFinder /opt/DeepVirFinder
+
+    # Make the script and models world-readable
+    chmod -R a+rX /opt/DeepVirFinder
+
+%environment
+    # Activate the dvf conda environment
+    export PATH=/opt/conda/envs/dvf/bin:$PATH
+    export CONDA_DEFAULT_ENV=dvf
+
+    # Tell Keras to use the Theano backend (avoids needing ~/.keras/keras.json)
+    export KERAS_BACKEND=theano
+
+    # Suppress Theano's aggressive compiler output
+    export THEANO_FLAGS="mode=FAST_RUN,floatX=float32,base_compiledir=/tmp/theano_${USER:-nobody}"
+
+%runscript
+    exec python /opt/DeepVirFinder/dvf.py "$@"
