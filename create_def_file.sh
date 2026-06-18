@@ -3,13 +3,13 @@
 # info from PyPI and/or GitHub and synthesizing with Claude.
 #
 # Usage:   create_def_file.sh <ToolName>
-# Creates: <ToolName>/<ToolName>.def  (relative to CWD)
+# Creates: tools/<ToolName>/<ToolName>.def  (relative to CWD)
 
 set -euo pipefail
 
 TOOL="$1"
 TOOL_LOWER=$(echo "$TOOL" | tr '[:upper:]' '[:lower:]')
-DEF_DIR="./$TOOL"
+DEF_DIR="./tools/$TOOL"
 DEF_FILE="$DEF_DIR/$TOOL.def"
 TEMPLATE="$(dirname "$0")/template.def"
 source "$(dirname "$0")/config.sh"

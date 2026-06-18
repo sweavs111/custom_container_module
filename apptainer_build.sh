@@ -14,7 +14,7 @@ TOOL="FastAAI"
 DEPLOY=true   # set to false to skip container-mod module generation after build
 
 ### --- Derived paths ---
-DEF="${TOOL}/${TOOL}.def"
+DEF="tools/${TOOL}/${TOOL}.def"
 TOOL_LOWER=$(echo "$TOOL" | tr '[:upper:]' '[:lower:]')
 REPOS_FILE="$(dirname "$CONTAINER_MOD")/repos/$TOOL_LOWER"
 
@@ -29,7 +29,7 @@ if [[ -z "$VERSION" ]]; then
     echo "ERROR: could not extract Version label from $DEF" >&2
     exit 1
 fi
-SIF="${TOOL}/${TOOL}-${VERSION}"
+SIF="tools/${TOOL}/${TOOL}-${VERSION}"
 
 ### --- Pre-flight: generate container-mod metadata if missing ---
 if [[ "$DEPLOY" == true && ! -f "$REPOS_FILE" ]]; then
