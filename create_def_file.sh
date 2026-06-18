@@ -12,7 +12,8 @@ TOOL_LOWER=$(echo "$TOOL" | tr '[:upper:]' '[:lower:]')
 DEF_DIR="./$TOOL"
 DEF_FILE="$DEF_DIR/$TOOL.def"
 TEMPLATE="$(dirname "$0")/template.def"
-CLAUDE=$(command -v claude 2>/dev/null || echo "/home/sdweave2/.local/bin/claude")
+source "$(dirname "$0")/config.sh"
+CLAUDE=$(command -v claude 2>/dev/null || echo "$CLAUDE_BIN")
 
 # --- Validation ---
 if [[ ! -f "$TEMPLATE" ]]; then

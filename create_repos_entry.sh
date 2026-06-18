@@ -14,7 +14,8 @@ if [[ ! -f "$DEF" ]]; then
     exit 1
 fi
 
-CLAUDE=$(command -v claude 2>/dev/null || echo "/home/sdweave2/.local/bin/claude")
+source "$(dirname "$0")/config.sh"
+CLAUDE=$(command -v claude 2>/dev/null || echo "$CLAUDE_BIN")
 
 if [[ ! -x "$CLAUDE" ]]; then
     echo "ERROR: claude CLI not found — cannot auto-generate repos entry" >&2

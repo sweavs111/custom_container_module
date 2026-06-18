@@ -1,9 +1,9 @@
 #!/bin/bash
 
 ### --- Environment ---
-source /rs1/shares/brc/admin/containers/container-mod_nf/scripts/config_mm.sh
+source "$(dirname "$0")/config.sh"
 if [[ -z "${CONTAINER_MOD:-}" || ! -x "$CONTAINER_MOD" ]]; then
-    echo "ERROR: CONTAINER_MOD not set or not executable after sourcing config_mm.sh" >&2
+    echo "ERROR: CONTAINER_MOD not set or not executable — check config.sh" >&2
     exit 1
 fi
 module load apptainer
@@ -58,7 +58,7 @@ fi
 
 ### --- Deploy module ---
 if [[ "$DEPLOY" == true ]]; then
-    source "$(dirname "$CONTAINER_MOD")/profiles/brc"
+    source "$(dirname "$CONTAINER_MOD")/profiles/$CONTAINER_MOD_PROFILE"
     SIF_DEST="${PUBLIC_IMAGEDIR}/$(basename "${SIF}.sif")"
 
     echo "$(date +"%Y-%m-%d %H:%M:%S")" >> container_build.log
@@ -66,7 +66,7 @@ if [[ "$DEPLOY" == true ]]; then
     BASH_XTRACEFD=3
     set -x
     cp "${SIF}.sif" "$SIF_DEST"
-    printf '%s\n%s\n' "$TOOL_LOWER" "$VERSION" | "$CONTAINER_MOD" pipe -t --profile brc --update "$SIF_DEST"
+    printf '%s\n%s\n' "$TOOL_LOWER" "$VERSION" | "$CONTAINER_MOD" pipe -t --profile "$CONTAINER_MOD_PROFILE" --update "$SIF_DEST"
     DEPLOY_EXIT=${PIPESTATUS[1]}
     { set +x; } 2>/dev/null
     exec 3>&-
