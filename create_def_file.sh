@@ -43,6 +43,20 @@ for name in "$TOOL" "$TOOL_LOWER"; do
     fi
 done
 
+# --- Pre-extract key fields from PyPI metadata ---
+PYPI_VERSION=""
+PYPI_SUMMARY=""
+if [[ -n "$PYPI_JSON" ]]; then
+    PYPI_VERSION=$(echo "$PYPI_JSON" | python3 -c "
+import json, sys
+print(json.load(sys.stdin)['info']['version'])
+" 2>/dev/null || true)
+    PYPI_SUMMARY=$(echo "$PYPI_JSON" | python3 -c "
+import json, sys
+print(json.load(sys.stdin)['info'].get('summary') or '')
+" 2>/dev/null || true)
+fi
+
 # --- Extract GitHub URL from PyPI metadata ---
 GITHUB_URL=""
 if [[ -n "$PYPI_JSON" ]]; then
@@ -104,7 +118,11 @@ fi
 # --- Assemble context ---
 CONTEXT=""
 if [[ -n "$PYPI_JSON" ]]; then
-    CONTEXT+="## PyPI package data (JSON):
+    CONTEXT+="## PyPI key facts (use these verbatim — do not re-derive from JSON):
+Version: ${PYPI_VERSION}
+Summary: ${PYPI_SUMMARY}
+
+## PyPI full metadata (JSON, truncated):
 $(echo "$PYPI_JSON" | head -c 3000)
 
 "
@@ -132,7 +150,8 @@ Hard requirements:
 - Bootstrap: docker
 - From: ubuntu:22.04
 - Maintainer: sdweave2@ncsu.edu
-- Version label must match the version being installed
+- Version to install: ${PYPI_VERSION:-extract from tool information above}
+- Version label in %labels must equal the installed version exactly
 - %post must include: mkdir -p /rs1 /share /home /usr/local/usrapps
 - %post must install python3, python3-pip, build-essential, git via apt-get with the standard cleanup pattern from the template
 - Pin the version explicitly in the install command for reproducibility

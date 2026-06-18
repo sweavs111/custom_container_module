@@ -1,6 +1,6 @@
 #!/bin/bash
 # Generates a container-mod repos metadata file from an Apptainer .def file
-# using Claude to extract description, homepage, and programs.
+# by parsing the structured fields directly — no external dependencies required.
 #
 # Usage: create_repos_entry.sh <def_file> <repos_output_path>
 
@@ -14,32 +14,34 @@ if [[ ! -f "$DEF" ]]; then
     exit 1
 fi
 
-source "$(dirname "$0")/config.sh"
-CLAUDE=$(command -v claude 2>/dev/null || echo "$CLAUDE_BIN")
-
-if [[ ! -x "$CLAUDE" ]]; then
-    echo "ERROR: claude CLI not found — cannot auto-generate repos entry" >&2
-    exit 1
-fi
-
 TOOL=$(basename "$REPOS_FILE")
-echo "Generating container-mod metadata for '$TOOL' from $(basename "$DEF")..."
+echo "Extracting container-mod metadata for '$TOOL' from $(basename "$DEF")..."
 
-"$CLAUDE" -p "Generate a container-mod app metadata file from this Apptainer definition file.
+# Description: first content line of %help, text after the em-dash separator
+DESCRIPTION=$(awk '/^%help/{found=1; next} found && NF{print; exit}' "$DEF" \
+    | sed 's/^[[:space:]]*//' \
+    | sed 's/^[^—]*—[[:space:]]*//')
 
-Output ONLY these three lines with no extra text, explanation, markdown, or code fences:
-Description: <one concise sentence describing what the tool does>
-Home Page: <exact URL from the %labels Source field>
-Programs: <comma-separated executable names from %runscript — the command before \"\$@\", without the leading 'exec '>
+# Home Page: Source label value
+HOMEPAGE=$(awk '/Source/{print $NF; exit}' "$DEF")
 
-Apptainer definition file:
-$(cat "$DEF")" > "$REPOS_FILE"
+# Programs: exec target in %runscript, strip leading 'exec ' and trailing ' "$@"'
+PROGRAMS=$(awk '/^%runscript/{found=1; next} found && /exec /{
+    sub(/^[[:space:]]+exec[[:space:]]+/, "")
+    sub(/[[:space:]]*"\$@".*/, "")
+    print; exit
+}' "$DEF")
 
-if [[ ! -s "$REPOS_FILE" ]]; then
-    echo "ERROR: Claude produced no output — repos file not created" >&2
-    rm -f "$REPOS_FILE"
+if [[ -z "$DESCRIPTION" || -z "$HOMEPAGE" || -z "$PROGRAMS" ]]; then
+    echo "ERROR: could not extract one or more fields from $DEF" >&2
+    echo "  Description: '${DESCRIPTION:-<empty>}'" >&2
+    echo "  Home Page:   '${HOMEPAGE:-<empty>}'" >&2
+    echo "  Programs:    '${PROGRAMS:-<empty>}'" >&2
     exit 1
 fi
+
+printf 'Description: %s\nHome Page: %s\nPrograms: %s\n' \
+    "$DESCRIPTION" "$HOMEPAGE" "$PROGRAMS" > "$REPOS_FILE"
 
 echo "Created: $REPOS_FILE"
 echo "---"

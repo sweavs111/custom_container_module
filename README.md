@@ -6,7 +6,7 @@ Scripts for building and deploying [Apptainer](https://apptainer.org/) container
 
 - Run from a **login node** — Apptainer needs outbound internet access during `%post`
 - `module load apptainer` (handled automatically by `apptainer_build.sh`)
-- `claude` CLI available on PATH or set as `CLAUDE_BIN` in `config.sh`
+- `claude` CLI available on PATH or set as `CLAUDE_BIN` in `config.sh` (required by `create_def_file.sh` only)
 
 ## Configuration
 
@@ -23,7 +23,7 @@ CONTAINER_MOD_PROFILE="brc"
 CLAUDE_BIN="/home/you/.local/bin/claude"
 ```
 
-All three scripts (`apptainer_build.sh`, `create_def_file.sh`, `create_repos_entry.sh`) source `config.sh` automatically.
+`apptainer_build.sh` and `create_def_file.sh` source `config.sh` automatically.
 
 ## Adding a New Tool
 
@@ -63,7 +63,7 @@ build_container/
 ├── apptainer_build.sh        # main build/deploy wrapper
 ├── config.sh                 # site-specific paths and settings (edit before use)
 ├── create_def_file.sh        # auto-generates .def via Claude + PyPI/GitHub
-├── create_repos_entry.sh     # auto-generates container-mod metadata via Claude
+├── create_repos_entry.sh     # auto-generates container-mod metadata by parsing the .def
 ├── template.def              # canonical .def template
 ├── <ToolName>/
 │   └── <ToolName>.def        # Apptainer definition (source of truth)
@@ -105,4 +105,4 @@ pip3 install --no-cache-dir /opt/<Tool>
 | Script | Purpose |
 |--------|---------|
 | `create_def_file.sh <ToolName>` | Generates `<ToolName>/<ToolName>.def` by querying PyPI/GitHub then prompting Claude |
-| `create_repos_entry.sh <def_file> <output_path>` | Generates the container-mod metadata file (Description, Home Page, Programs) from a `.def` via Claude |
+| `create_repos_entry.sh <def_file> <output_path>` | Generates the container-mod metadata file (Description, Home Page, Programs) by parsing the `.def` directly — no Claude required |
