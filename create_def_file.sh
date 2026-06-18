@@ -144,26 +144,62 @@ echo "Generating .def file with Claude..."
 
 "$CLAUDE" -p "Generate a complete Apptainer .def file for the tool '$TOOL'.
 
-Follow the template below EXACTLY. Replace all <PLACEHOLDER> values with real content derived from the tool information provided. Do not leave any placeholders in the output.
+Use the template below as a structural guide. Replace all <PLACEHOLDER> values with real content. Do not leave any placeholders in the output.
 
-Hard requirements:
+Hard requirements (always apply):
 - Bootstrap: docker
-- From: ubuntu:22.04
 - Maintainer: sdweave2@ncsu.edu
 - Version to install: ${PYPI_VERSION:-extract from tool information above}
 - Version label in %labels must equal the installed version exactly
 - %post must include: mkdir -p /rs1 /share /home /usr/local/usrapps
-- %post must install python3, python3-pip, build-essential, git via apt-get with the standard cleanup pattern from the template
 - Pin the version explicitly in the install command for reproducibility
 - %runscript must be: exec <command> \"\$@\"
-- %test must be: <command> --help
+- %test must be: <command> --help (omit %test if the tool has no --help flag)
 - Output ONLY the .def file content — no explanation, no markdown fences, no commentary
+
+Choose the install workflow that best matches what the tool's README or PyPI metadata recommends:
+
+1. PyPI release (From: ubuntu:22.04) — preferred when a versioned PyPI package exists:
+   apt-get install python3 python3-pip build-essential git + pip3 install --no-cache-dir <Tool>==<Version>
+
+2. GitHub source via pip (From: ubuntu:22.04) — when no PyPI release exists but a setup.py/pyproject.toml does:
+   apt-get install python3 python3-pip build-essential git + pip3 install --no-cache-dir git+<URL>@<tag>
+
+3. Clone + local pip install (From: ubuntu:22.04) — when the repo must be present at runtime (e.g., bundled models/data):
+   apt-get install python3 python3-pip build-essential git + git clone --depth 1 --branch <tag> <URL> /opt/<Tool> + pip3 install --no-cache-dir /opt/<Tool>
+
+4. Bare git clone (From: ubuntu:22.04 or other minimal base) — when the tool is a script or binary with no Python packaging:
+   apt-get install any runtime deps + git clone --depth 1 --branch <tag> <URL> /opt/<Tool> + chmod/PATH in %environment
+
+5. Conda environment (From: continuumio/miniconda3:<version>) — when the README explicitly requires conda or the dependency stack is incompatible with pip (e.g., pinned legacy packages, compiled bioconda packages):
+   conda create -n <env> -y -c <channels> <pkg>=<ver> ... + conda clean -afy
+   Activate in %environment by prepending /opt/conda/envs/<env>/bin to PATH
+
+For any workflow using apt-get, always follow the standard cleanup pattern:
+   apt-get update -qq && apt-get install -y --no-install-recommends ... && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 ## Template:
 $(cat "$TEMPLATE")
 
 ## Tool information:
 $CONTEXT" > "$DEF_FILE"
+
+# Strip markdown fences and any preamble/explanation Claude may have added.
+# Looks for content between ``` fences first; falls back to first Bootstrap: line.
+python3 - "$DEF_FILE" <<'PYEOF'
+import sys, re
+path = sys.argv[1]
+content = open(path).read()
+m = re.search(r'```[^\n]*\n(.*?)```', content, re.DOTALL)
+if m:
+    content = m.group(1)
+else:
+    idx = content.find('Bootstrap:')
+    if idx != -1:
+        content = content[idx:]
+with open(path, 'w') as f:
+    f.write(content.rstrip() + '\n')
+PYEOF
 
 if [[ ! -s "$DEF_FILE" ]]; then
     echo "ERROR: Claude produced no output — aborting" >&2
