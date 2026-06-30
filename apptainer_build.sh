@@ -10,9 +10,9 @@ module load apptainer
 export APPTAINER_BINDPATH=""   # required — Hazel's apptainer config sets a bind path that breaks builds
 
 ### --- Edit this section ---
-TOOL="FastAAI"
+TOOL="fastaaiv2"
 DEPLOY=true   # set to false to skip container-mod module generation after build
-GITHUB_URL=""  # optional: set to the exact GitHub URL if auto-search picks the wrong repo
+GITHUB_URL="https://github.com/KGerhardt/fastaaiv2"  # optional: set to the exact GitHub URL if auto-search picks the wrong repo
 
 ### --- Derived paths ---
 DEF="tools/${TOOL}/${TOOL}.def"

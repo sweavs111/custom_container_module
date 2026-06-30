@@ -77,6 +77,26 @@ for name in "$TOOL" "$TOOL_LOWER"; do
     fi
 done
 
+# --- Cross-validate PyPI result against provided GitHub URL ---
+# If --github-url was given but the PyPI package's listed URLs don't reference it,
+# the PyPI hit is an unrelated package — discard it to avoid wrong installs (e.g. Phanta).
+if [[ -n "$GITHUB_URL_OVERRIDE" && -n "$PYPI_JSON" ]]; then
+    URL_MATCH=$(echo "$PYPI_JSON" | python3 -c "
+import json, sys
+data = json.load(sys.stdin)
+info = data.get('info', {})
+candidates = [info.get('home_page') or '', info.get('project_url') or '']
+for v in (info.get('project_urls') or {}).values():
+    candidates.append(v or '')
+override = '$GITHUB_URL_OVERRIDE'.rstrip('/')
+print('MATCH' if any(override.lower() in c.lower() for c in candidates if c) else 'MISMATCH')
+" 2>/dev/null || echo "MATCH")
+    if [[ "$URL_MATCH" == "MISMATCH" ]]; then
+        echo "  WARNING: PyPI URLs don't reference --github-url — discarding PyPI data (unrelated package)"
+        PYPI_JSON=""
+    fi
+fi
+
 # --- Pre-extract key fields from PyPI metadata ---
 PYPI_VERSION=""
 PYPI_SUMMARY=""
@@ -95,7 +115,7 @@ fi
 GITHUB_URL=""
 
 if [[ -n "$GITHUB_URL_OVERRIDE" ]]; then
-    GITHUB_URL="$GITHUB_URL_OVERRIDE"
+    GITHUB_URL="${GITHUB_URL_OVERRIDE%/}"   # strip trailing slash
     echo "Using provided GitHub URL: $GITHUB_URL"
 elif [[ -n "$PYPI_JSON" ]]; then
     GITHUB_URL=$(echo "$PYPI_JSON" | python3 -c "
@@ -185,7 +205,9 @@ fi
 # --- Bioinformatics relevance check ---
 # Aborts early if the discovered tool is clearly not life-sciences related.
 # Fails open (proceeds) if Claude is unreachable or returns an unexpected response.
-if [[ -n "$PYPI_SUMMARY" || -n "$GITHUB_README" ]]; then
+if [[ -n "$GITHUB_URL" && -z "$GITHUB_README" ]]; then
+    echo "  README fetch failed — skipping bio check (proceeding)"
+elif [[ -n "$PYPI_SUMMARY" || -n "$GITHUB_README" ]]; then
     echo "Checking bioinformatics relevance..."
     BIO_CONTEXT="Tool: $TOOL"
     [[ -n "$PYPI_SUMMARY" ]] && BIO_CONTEXT+="
@@ -239,6 +261,13 @@ echo "Generating .def file with Claude..."
 
 Use the template below as a structural guide. Replace all <PLACEHOLDER> values with real content. Do not leave any placeholders in the output.
 
+Source hierarchy — when information conflicts, follow this order:
+1. GitHub README — authoritative for install method, tool entrypoints, and conda/pip preference.
+2. PyPI metadata — supplementary only; if it conflicts with the README, trust the README.
+3. GitHub URL — use to confirm you have the correct package when the PyPI name is ambiguous.
+
+PyPI package identity rule: If the PyPI home_page or project_urls do not reference the GitHub URL provided above, the PyPI entry is for a different, unrelated package. Discard its version, install instructions, and dependencies. Derive everything from the GitHub README and URL instead.
+
 Hard requirements (always apply):
 - Bootstrap: docker
 - Maintainer: sdweave2@ncsu.edu
@@ -250,23 +279,30 @@ Hard requirements (always apply):
 - %test must be: <command> --help (omit %test if the tool has no --help flag)
 - Output ONLY the .def file content — no explanation, no markdown fences, no commentary
 
-Choose the install workflow that best matches what the tool's README or PyPI metadata recommends:
+Choose the install workflow that best matches what the tool's README or PyPI metadata recommends.
 
-1. PyPI release (From: ubuntu:22.04) — preferred when a versioned PyPI package exists:
-   apt-get install python3 python3-pip build-essential git + pip3 install --no-cache-dir <Tool>==<Version>
+IMPORTANT decision rule — follow in order:
+- If the README contains 'conda install', '-c bioconda', a Bioconda badge, or any conda-based install example: use Pattern 5. This is the authoritative signal that conda is the intended distribution path.
+- If the PyPI dependencies pin very old versions (numpy<1.20, numpy<=1.17, scipy<1.5, scipy<=1.4, or similar): the PyPI wheel will fail to build on Ubuntu 22.04. Use Pattern 5 (conda) or Pattern 2/3 (GitHub source) instead.
+- If a git clone is needed inside %post on ubuntu:22.04, always include ca-certificates in the apt install AND call \`update-ca-certificates\` immediately after the apt-get block, before any git clone command.
+- Whenever %post uses pip install from source inside a conda environment (pip install git+URL, pip install /opt/..., or pip install .), always add c-compiler and cxx-compiler from conda-forge to the conda create call — do not try to infer whether C extensions are present.
+
+1. PyPI release (From: ubuntu:22.04) — when a recent PyPI wheel exists with no ancient pinned deps:
+   apt-get install python3 python3-dev python3-pip build-essential git ca-certificates + pip3 install --no-cache-dir <Tool>==<Version>
 
 2. GitHub source via pip (From: ubuntu:22.04) — when no PyPI release exists but a setup.py/pyproject.toml does:
-   apt-get install python3 python3-pip build-essential git + pip3 install --no-cache-dir git+<URL>@<tag>
+   apt-get install python3 python3-dev python3-pip build-essential git ca-certificates + pip3 install --no-cache-dir git+<URL>@<tag>
 
 3. Clone + local pip install (From: ubuntu:22.04) — when the repo must be present at runtime (e.g., bundled models/data):
-   apt-get install python3 python3-pip build-essential git + git clone --depth 1 --branch <tag> <URL> /opt/<Tool> + pip3 install --no-cache-dir /opt/<Tool>
+   apt-get install python3 python3-dev python3-pip build-essential git ca-certificates + git clone --depth 1 --branch <tag> <URL> /opt/<Tool> + pip3 install --no-cache-dir /opt/<Tool>
 
 4. Bare git clone (From: ubuntu:22.04 or other minimal base) — when the tool is a script or binary with no Python packaging:
-   apt-get install any runtime deps + git clone --depth 1 --branch <tag> <URL> /opt/<Tool> + chmod/PATH in %environment
+   apt-get install any runtime deps (always include ca-certificates) + git clone --depth 1 --branch <tag> <URL> /opt/<Tool> + chmod/PATH in %environment
 
-5. Conda environment (From: continuumio/miniconda3:<version>) — when the README explicitly requires conda or the dependency stack is incompatible with pip (e.g., pinned legacy packages, compiled bioconda packages):
-   conda create -n <env> -y -c <channels> <pkg>=<ver> ... + conda clean -afy
-   Activate in %environment by prepending /opt/conda/envs/<env>/bin to PATH
+5. Conda install (From: continuumio/miniconda3:23.5.2-0) — PREFERRED for bioinformatics tools on bioconda, or when deps are too old to compile from source:
+   conda install -n base -y -c conda-forge -c bioconda <pkg>=<ver> + conda clean -afy
+   OR for tools needing an isolated env: conda create -n <env> -y -c conda-forge -c bioconda <pkg>=<ver> ... + conda clean -afy
+   Activate in %environment by prepending /opt/conda/bin or /opt/conda/envs/<env>/bin to PATH
 
 For any workflow using apt-get, always follow the standard cleanup pattern:
    apt-get update -qq && apt-get install -y --no-install-recommends ... && apt-get clean && rm -rf /var/lib/apt/lists/*
