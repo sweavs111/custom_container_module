@@ -17,10 +17,13 @@ export APPTAINER_CACHEDIR="$APPTAINER_CACHEDIR"
 export APPTAINER_TMPDIR="$APPTAINER_TMPDIR"
 mkdir -p "$APPTAINER_CACHEDIR" "$APPTAINER_TMPDIR"
 
-### --- Edit this section ---
-TOOL="ToolName"
-DEPLOY=true   # set to false to skip container-mod module generation after build
-GITHUB_URL=""  # optional: set to the exact GitHub URL if auto-search picks the wrong repo
+### --- Edit before each build (in config.sh) ---
+# GITHUB_URL and DEPLOY are set at the top of config.sh, not here.
+if [[ -z "${GITHUB_URL:-}" ]]; then
+    echo "ERROR: GITHUB_URL not set — edit it at the top of config.sh" >&2
+    exit 1
+fi
+TOOL=$(derive_tool_name "$GITHUB_URL")
 
 ### --- Derived paths ---
 DEF="tools/${TOOL}/${TOOL}.def"
@@ -29,9 +32,7 @@ REPOS_FILE="$(dirname "$CONTAINER_MOD")/repos/$TOOL_LOWER"
 
 ### --- Pre-flight: generate .def file if missing ---
 if [[ ! -f "$DEF" ]]; then
-    create_args=("$TOOL")
-    [[ -n "${GITHUB_URL:-}" ]] && create_args+=(--github-url "$GITHUB_URL")
-    "$(dirname "$0")/create_def_file.sh" "${create_args[@]}" || exit 1
+    "$(dirname "$0")/create_def_file.sh" "$GITHUB_URL" || exit 1
     echo ""
     echo "A .def file was generated but NOT reviewed. Re-run after checking"
     echo "tools/${TOOL}/${TOOL}.def, or Ctrl-C now to review first."

@@ -1,13 +1,20 @@
 #!/bin/bash
-# Generates an Apptainer .def file for a given tool by gathering real,
-# verifiable evidence about how to install it, then synthesizing with Claude.
+# Generates an Apptainer .def file for a GitHub-hosted tool by gathering
+# real, verifiable evidence about how to install it, then synthesizing
+# with Claude.
 #
-# Usage:   create_def_file.sh <ToolName> [--github-url <URL>]
+# Usage:   create_def_file.sh <GitHubURL>
 # Creates: tools/<ToolName>/<ToolName>.def  (relative to CWD)
 #
-# Options:
-#   --github-url <URL>   Skip GitHub search and use this URL directly.
-#                        Useful when multiple repos share a similar name.
+# The GitHub URL is the sole input — nothing here ever searches by name to
+# find or pick a repo. Requiring the exact repo URL up front removes the
+# ambiguity of name-based search picking the wrong same-named repo. The
+# tool/module name is always derived from the URL itself (see
+# derive_tool_name in config.sh), never typed separately. The one place a
+# name is used is a PyPI *fact* lookup (version/summary) on the
+# already-derived name, cross-validated against this same repo URL — never
+# used to discover or choose a repo, only to avoid Claude inventing a
+# version number when a real PyPI release exists.
 #
 # Design notes (see CLAUDE.md "Lessons from empirical builds" for the full
 # story — these rules were derived from real apptainer builds, not guessed):
@@ -21,42 +28,23 @@
 
 set -euo pipefail
 
+source "$(dirname "$0")/config.sh"
+
 # --- Argument parsing ---
-TOOL=""
-GITHUB_URL_OVERRIDE=""
-
-while [[ $# -gt 0 ]]; do
-    case "$1" in
-        --github-url)
-            GITHUB_URL_OVERRIDE="$2"
-            shift 2
-            ;;
-        --github-url=*)
-            GITHUB_URL_OVERRIDE="${1#*=}"
-            shift
-            ;;
-        -*)
-            echo "ERROR: Unknown option: $1" >&2
-            echo "Usage: create_def_file.sh <ToolName> [--github-url <URL>]" >&2
-            exit 1
-            ;;
-        *)
-            TOOL="$1"
-            shift
-            ;;
-    esac
-done
-
-if [[ -z "$TOOL" ]]; then
-    echo "Usage: create_def_file.sh <ToolName> [--github-url <URL>]" >&2
+# The GitHub URL is always taken from the CLI argument here, never from
+# config.sh's GITHUB_URL — that variable is apptainer_build.sh's per-build
+# input, sourcing config.sh must not let its empty default clobber this.
+if [[ $# -ne 1 || "$1" != https://github.com/*/* ]]; then
+    echo "Usage: create_def_file.sh <GitHubURL>" >&2
+    echo "  e.g. create_def_file.sh https://github.com/Shamir-Lab/PlasClass" >&2
     exit 1
 fi
-
+GITHUB_URL="${1%/}"
+TOOL=$(derive_tool_name "$GITHUB_URL")
 TOOL_LOWER=$(echo "$TOOL" | tr '[:upper:]' '[:lower:]')
 DEF_DIR="./tools/$TOOL"
 DEF_FILE="$DEF_DIR/$TOOL.def"
 TEMPLATE="$(dirname "$0")/template.def"
-source "$(dirname "$0")/config.sh"
 CLAUDE=$(command -v claude 2>/dev/null || echo "$CLAUDE_BIN")
 
 # --- Validation ---
@@ -82,140 +70,42 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# --- Search PyPI ---
-echo "Searching PyPI for '$TOOL'..."
-PYPI_JSON=""
-for name in "$TOOL" "$TOOL_LOWER"; do
-    result=$(curl -sf "https://pypi.org/pypi/$name/json" 2>/dev/null || true)
-    if [[ -n "$result" ]]; then
-        PYPI_JSON="$result"
-        echo "  Found: pypi.org/project/$name"
-        break
-    fi
-done
+echo "Using GitHub URL: $GITHUB_URL (tool name: $TOOL)"
 
-# --- Cross-validate PyPI result against provided GitHub URL ---
-# If --github-url was given but the PyPI package's listed URLs don't reference it,
-# the PyPI hit is an unrelated package — discard it to avoid wrong installs.
-if [[ -n "$GITHUB_URL_OVERRIDE" && -n "$PYPI_JSON" ]]; then
-    URL_MATCH=$(echo "$PYPI_JSON" | python3 -c "
-import json, sys
-data = json.load(sys.stdin)
-info = data.get('info', {})
-candidates = [info.get('home_page') or '', info.get('project_url') or '']
-for v in (info.get('project_urls') or {}).values():
-    candidates.append(v or '')
-override = '$GITHUB_URL_OVERRIDE'.rstrip('/')
-print('MATCH' if any(override.lower() in c.lower() for c in candidates if c) else 'MISMATCH')
-" 2>/dev/null || echo "MATCH")
-    if [[ "$URL_MATCH" == "MISMATCH" ]]; then
-        echo "  WARNING: PyPI URLs don't reference --github-url — discarding PyPI data (unrelated package)"
-        PYPI_JSON=""
-    fi
+# --- Repo tree + default branch (single source of truth for everything below) ---
+# Supports both a plain repo-root URL and a monorepo subdirectory URL
+# (.../tree/<branch>/<subdir>, e.g. PlasMAAG's actual source lives under
+# RasmussenLab/vamb). When a subdir is present, evidence gathering below
+# is scoped to that subtree only — checking the whole monorepo for e.g. a
+# packaging file would find vamb's, not the tool's own.
+REPO_PATH=""
+DEFAULT_BRANCH="main"
+SUBDIR=""
+TREE_PATHS_FILE=""
+
+if [[ "$GITHUB_URL" =~ ^https://github\.com/([^/]+/[^/]+)/tree/([^/]+)/(.+)$ ]]; then
+    REPO_PATH="${BASH_REMATCH[1]}"
+    DEFAULT_BRANCH="${BASH_REMATCH[2]}"
+    SUBDIR="${BASH_REMATCH[3]%/}"
+    echo "  Monorepo subdirectory detected: $SUBDIR (repo: $REPO_PATH, branch: $DEFAULT_BRANCH)"
+else
+    REPO_PATH=$(echo "$GITHUB_URL" | sed 's|https://github.com/||')
 fi
 
-# --- Pre-extract key fields from PyPI metadata ---
-PYPI_VERSION=""
-PYPI_SUMMARY=""
-if [[ -n "$PYPI_JSON" ]]; then
-    PYPI_VERSION=$(echo "$PYPI_JSON" | python3 -c "
-import json, sys
-print(json.load(sys.stdin)['info']['version'])
-" 2>/dev/null || true)
-    PYPI_SUMMARY=$(echo "$PYPI_JSON" | python3 -c "
-import json, sys
-print(json.load(sys.stdin)['info'].get('summary') or '')
-" 2>/dev/null || true)
-fi
-
-# --- Determine GitHub URL ---
-GITHUB_URL=""
-
-if [[ -n "$GITHUB_URL_OVERRIDE" ]]; then
-    GITHUB_URL="${GITHUB_URL_OVERRIDE%/}"   # strip trailing slash
-    echo "Using provided GitHub URL: $GITHUB_URL"
-elif [[ -n "$PYPI_JSON" ]]; then
-    GITHUB_URL=$(echo "$PYPI_JSON" | python3 -c "
-import json, re, sys
-data = json.load(sys.stdin)
-info = data.get('info', {})
-candidates = [info.get('home_page') or '', info.get('project_url') or '']
-for v in (info.get('project_urls') or {}).values():
-    candidates.append(v or '')
-for url in candidates:
-    m = re.match(r'https://github\.com/[^/]+/[^/#? ]+', url)
-    if m:
-        print(m.group(0).rstrip('/'))
-        break
-" 2>/dev/null || true)
-fi
-
-# --- Fallback: GitHub search with name-match ranking ---
-if [[ -z "$GITHUB_URL" ]]; then
-    echo "Not found on PyPI or no GitHub URL in metadata — searching GitHub..."
-    SEARCH_JSON=$(curl -sf \
-        -H "Accept: application/vnd.github+json" \
-        "https://api.github.com/search/repositories?q=${TOOL_LOWER}&sort=stars&per_page=10" \
-        2>/dev/null || true)
-    if [[ -n "$SEARCH_JSON" ]]; then
-        SEARCH_RESULT=$(echo "$SEARCH_JSON" | python3 -c "
-import json, sys
-items = json.load(sys.stdin).get('items', [])
-tool_lower = '$TOOL_LOWER'
-
-def rank(item):
-    name = item.get('name', '').lower()
-    if name == tool_lower:
-        return 0
-    if name.startswith(tool_lower) or tool_lower.startswith(name):
-        return 1
-    if tool_lower in name:
-        return 2
-    return 3
-
-ranked = sorted(items, key=lambda x: (rank(x), -x.get('stargazers_count', 0)))
-if ranked:
-    best = ranked[0]
-    r = rank(best)
-    if r > 0:
-        print('WARN:no exact name match; using \"{}\" (closest to \"{}\") -- verify or re-run with --github-url'.format(best['name'], tool_lower))
-    else:
-        print('OK:')
-    print(best.get('html_url', ''))
-" 2>/dev/null || true)
-        if [[ -n "$SEARCH_RESULT" ]]; then
-            MATCH_STATUS=$(echo "$SEARCH_RESULT" | head -1)
-            GITHUB_URL=$(echo "$SEARCH_RESULT" | sed -n '2p')
-            if [[ "$MATCH_STATUS" == WARN:* ]]; then
-                echo "  WARNING: ${MATCH_STATUS#WARN:}" >&2
-            fi
-            [[ -n "$GITHUB_URL" ]] && echo "  Found: $GITHUB_URL"
-        fi
-    fi
-fi
-
-if [[ -z "$PYPI_JSON" && -z "$GITHUB_URL" ]]; then
-    echo "ERROR: '$TOOL' not found on PyPI or GitHub — set DEF manually" >&2
+REPO_META=$(curl -sf "https://api.github.com/repos/$REPO_PATH" 2>/dev/null || true)
+if [[ -n "$REPO_META" ]]; then
+    [[ -z "$SUBDIR" ]] && DEFAULT_BRANCH=$(echo "$REPO_META" | python3 -c "import json,sys; print(json.load(sys.stdin).get('default_branch') or 'main')" 2>/dev/null || echo "main")
+else
+    echo "ERROR: could not reach GitHub repo $GITHUB_URL — check the URL" >&2
     rmdir "$DEF_DIR" 2>/dev/null || true
     exit 1
 fi
 
-# --- Repo tree + default branch (single source of truth for everything below) ---
-REPO_PATH=""
-DEFAULT_BRANCH="main"
-TREE_PATHS_FILE=""
-if [[ -n "$GITHUB_URL" ]]; then
-    REPO_PATH=$(echo "$GITHUB_URL" | sed 's|https://github.com/||')
-    REPO_META=$(curl -sf "https://api.github.com/repos/$REPO_PATH" 2>/dev/null || true)
-    if [[ -n "$REPO_META" ]]; then
-        DEFAULT_BRANCH=$(echo "$REPO_META" | python3 -c "import json,sys; print(json.load(sys.stdin).get('default_branch') or 'main')" 2>/dev/null || echo "main")
-    fi
-
-    TREE_JSON=$(curl -sf "https://api.github.com/repos/$REPO_PATH/git/trees/$DEFAULT_BRANCH?recursive=1" 2>/dev/null || true)
-    if [[ -n "$TREE_JSON" ]]; then
-        TREE_PATHS_FILE=$(mktemp)
-        CLEANUP_FILES+=("$TREE_PATHS_FILE")
-        echo "$TREE_JSON" | python3 -c "
+TREE_JSON=$(curl -sf "https://api.github.com/repos/$REPO_PATH/git/trees/$DEFAULT_BRANCH?recursive=1" 2>/dev/null || true)
+if [[ -n "$TREE_JSON" ]]; then
+    TREE_PATHS_FILE=$(mktemp)
+    CLEANUP_FILES+=("$TREE_PATHS_FILE")
+    echo "$TREE_JSON" | python3 -c "
 import json, sys
 try:
     data = json.load(sys.stdin)
@@ -225,17 +115,25 @@ for item in data.get('tree', []):
     if item.get('type') == 'blob':
         print(item['path'])
 " 2>/dev/null > "$TREE_PATHS_FILE" || true
+
+    if [[ -n "$SUBDIR" && -s "$TREE_PATHS_FILE" ]]; then
+        SCOPED_TREE_PATHS_FILE=$(mktemp)
+        CLEANUP_FILES+=("$SCOPED_TREE_PATHS_FILE")
+        grep "^${SUBDIR}/" "$TREE_PATHS_FILE" > "$SCOPED_TREE_PATHS_FILE" || true
+        TREE_PATHS_FILE="$SCOPED_TREE_PATHS_FILE"
     fi
 fi
 
-# --- Fetch README ---
-GITHUB_README=""
-if [[ -n "$GITHUB_URL" ]]; then
+# --- Fetch README (subdir's own if present, else fall back to repo root) ---
+GITHUB_README=$(curl -sf \
+    "https://raw.githubusercontent.com/$REPO_PATH/$DEFAULT_BRANCH/${SUBDIR:+$SUBDIR/}README.md" \
+    2>/dev/null | head -c 4000 || true)
+if [[ -z "$GITHUB_README" && -n "$SUBDIR" ]]; then
     GITHUB_README=$(curl -sf \
         "https://raw.githubusercontent.com/$REPO_PATH/$DEFAULT_BRANCH/README.md" \
         2>/dev/null | head -c 4000 || true)
-    [[ -n "$GITHUB_README" ]] && echo "  Fetched README ($DEFAULT_BRANCH)"
 fi
+[[ -n "$GITHUB_README" ]] && echo "  Fetched README ($DEFAULT_BRANCH${SUBDIR:+/$SUBDIR})"
 
 # --- Check for an upstream-shipped container definition (Pattern 0) ---
 # If the tool's own repo already ships a Dockerfile or Apptainer/Singularity
@@ -253,6 +151,47 @@ if [[ -n "${TREE_PATHS_FILE:-}" && -s "$TREE_PATHS_FILE" ]]; then
         UPSTREAM_DEF_CONTENT=$(curl -sf "https://raw.githubusercontent.com/$REPO_PATH/$DEFAULT_BRANCH/$UPSTREAM_DEF_PATH" 2>/dev/null | head -c 6000 || true)
     fi
 fi
+
+# --- Check PyPI (Pattern 1) ---
+# Fact lookup only — never used to find or validate repo identity, since
+# TOOL is already fixed from the GitHub URL. Rejected only if PyPI's own
+# metadata explicitly points to a *different* GitHub repo — many small
+# packages simply have no home_page/project_urls at all (verified on
+# FastAAI's real PyPI listing), and TOOL is already the repo's own name,
+# not a user-typed guess, so silence isn't treated as a mismatch.
+# Without this check at all, Claude has no ground truth for the version
+# number and has been observed to invent a plausible-looking but wrong
+# one, e.g. "1.2.1" when the real latest release is "0.1.20".
+PYPI_PACKAGE=""
+PYPI_VERSION=""
+PYPI_SUMMARY=""
+for candidate in "$TOOL_LOWER" "$TOOL"; do
+    PYPI_RESULT=$(curl -sf "https://pypi.org/pypi/$candidate/json" 2>/dev/null || true)
+    [[ -z "$PYPI_RESULT" ]] && continue
+    PYPI_MATCH=$(echo "$PYPI_RESULT" | python3 -c "
+import json, sys
+data = json.load(sys.stdin)
+info = data.get('info', {})
+candidates = [info.get('home_page') or '', info.get('project_url') or '']
+for v in (info.get('project_urls') or {}).values():
+    candidates.append(v or '')
+repo_root = 'https://github.com/$REPO_PATH'.rstrip('/')
+gh_urls = [c for c in candidates if c and 'github.com' in c.lower()]
+if not gh_urls:
+    print('MATCH')
+elif any(repo_root.lower() in c.lower() for c in gh_urls):
+    print('MATCH')
+else:
+    print('MISMATCH')
+" 2>/dev/null || echo "MISMATCH")
+    if [[ "$PYPI_MATCH" == "MATCH" ]]; then
+        PYPI_PACKAGE="$candidate"
+        PYPI_VERSION=$(echo "$PYPI_RESULT" | python3 -c "import json,sys; print(json.load(sys.stdin)['info']['version'])" 2>/dev/null || true)
+        PYPI_SUMMARY=$(echo "$PYPI_RESULT" | python3 -c "import json,sys; print(json.load(sys.stdin)['info'].get('summary') or '')" 2>/dev/null || true)
+        echo "  Found on PyPI: $candidate==$PYPI_VERSION (confirmed via matching repo URL)"
+        break
+    fi
+done
 
 # --- Check bioconda (Pattern 4) ---
 # Independent of PyPI — many bioinformatics tools are bioconda-only or
@@ -281,7 +220,7 @@ fi
 # can't be cross-checked against anything authoritative. Ground truth is
 # the actual import statements in the source.
 DISCOVERED_DEPS=""
-if [[ -z "$PYPI_JSON" && -z "$CONDA_PACKAGE" && "$HAS_PACKAGING" == false && -n "${TREE_PATHS_FILE:-}" && -s "$TREE_PATHS_FILE" ]]; then
+if [[ -z "$PYPI_PACKAGE" && -z "$CONDA_PACKAGE" && "$HAS_PACKAGING" == false && -n "${TREE_PATHS_FILE:-}" && -s "$TREE_PATHS_FILE" ]]; then
     echo "No PyPI/bioconda package or packaging file found — scanning source imports for real dependencies..."
     IMPORT_TMPDIR=$(mktemp -d)
     CLEANUP_FILES+=("$IMPORT_TMPDIR")
@@ -357,14 +296,11 @@ fi
 # --- Bioinformatics relevance check ---
 # Aborts early if the discovered tool is clearly not life-sciences related.
 # Fails open (proceeds) if Claude is unreachable or returns an unexpected response.
-if [[ -n "$GITHUB_URL" && -z "$GITHUB_README" ]]; then
+if [[ -z "$GITHUB_README" ]]; then
     echo "  README fetch failed — skipping bio check (proceeding)"
-elif [[ -n "$PYPI_SUMMARY" || -n "$GITHUB_README" ]]; then
+else
     echo "Checking bioinformatics relevance..."
-    BIO_CONTEXT="Tool: $TOOL"
-    [[ -n "$PYPI_SUMMARY" ]] && BIO_CONTEXT+="
-PyPI summary: $PYPI_SUMMARY"
-    [[ -n "$GITHUB_README" ]] && BIO_CONTEXT+="
+    BIO_CONTEXT="Tool: $TOOL
 README excerpt:
 $(echo "$GITHUB_README" | head -c 1000)"
 
@@ -374,7 +310,7 @@ $BIO_CONTEXT" 2>/dev/null || true)
 
     if [[ -n "$BIO_RESPONSE" ]] && echo "$BIO_RESPONSE" | grep -qiE '^\s*no\b'; then
         echo "ERROR: '$TOOL' does not appear to be a bioinformatics tool — discarding." >&2
-        echo "       If the wrong repo was selected, re-run with --github-url <correct-url>." >&2
+        echo "       If the wrong repo was selected, re-run with the correct GitHub URL." >&2
         rmdir "$DEF_DIR" 2>/dev/null || true
         exit 1
     fi
@@ -390,6 +326,16 @@ Maintainer label, the Hazel bind-mount mkdir line in %post, and %labels
 Source/Version to match our conventions. Do not re-derive install steps.
 
 $UPSTREAM_DEF_CONTENT
+
+"
+fi
+if [[ -n "$PYPI_PACKAGE" ]]; then
+    CONTEXT+="## AUTHORITATIVE: PyPI release found (confirmed via matching repo URL)
+Package: $PYPI_PACKAGE
+Version: $PYPI_VERSION
+Summary: $PYPI_SUMMARY
+Use these values verbatim if Pattern 1 applies — do not guess or re-derive
+a version number from the README.
 
 "
 fi
@@ -412,21 +358,9 @@ $DISCOVERED_DEPS
 
 "
 fi
-if [[ -n "$PYPI_JSON" ]]; then
-    CONTEXT+="## PyPI key facts (use these verbatim — do not re-derive from JSON):
-Version: ${PYPI_VERSION}
-Summary: ${PYPI_SUMMARY}
-
-## PyPI full metadata (JSON, truncated):
-$(echo "$PYPI_JSON" | head -c 3000)
+CONTEXT+="## GitHub repository: $GITHUB_URL (default branch: $DEFAULT_BRANCH)
 
 "
-fi
-if [[ -n "$GITHUB_URL" ]]; then
-    CONTEXT+="## GitHub repository: $GITHUB_URL (default branch: $DEFAULT_BRANCH)
-
-"
-fi
 if [[ -n "$GITHUB_README" ]]; then
     CONTEXT+="## README (first 4000 chars):
 $GITHUB_README
@@ -445,24 +379,22 @@ Replace all <PLACEHOLDER> values with real content. Do not leave any
 placeholders in the output.
 
 Source hierarchy — when information conflicts, follow this order:
-1. Any section above marked AUTHORITATIVE (upstream def, bioconda hit, or
-   source-derived dependency list) — these are verified facts, not inference.
+1. Any section above marked AUTHORITATIVE (upstream def, PyPI hit, bioconda
+   hit, or source-derived dependency list) — these are verified facts, not
+   inference.
 2. GitHub README — for install method and tool entrypoints when nothing
-   AUTHORITATIVE covers it.
-3. PyPI metadata — supplementary only; if it conflicts with the README or
-   an AUTHORITATIVE section, trust those instead.
-
-PyPI package identity rule: If the PyPI home_page or project_urls do not
-reference the GitHub URL provided above, the PyPI entry is for a different,
-unrelated package. Discard its version, install instructions, and
-dependencies. Derive everything from the GitHub README and URL instead.
+   AUTHORITATIVE covers it. If no AUTHORITATIVE PyPI section is present
+   above, do NOT use Pattern 1 or invent a version number — no matching
+   PyPI release was found, so treat this as Pattern 2 or 3 instead.
 
 Hard requirements (always apply):
 - Bootstrap: docker
 - Maintainer: sdweave2@ncsu.edu
 - Version label in %labels must equal the installed version exactly
 - %post must include: mkdir -p /rs1 /share /home /usr/local/usrapps
-- Pin the version explicitly in the install command for reproducibility
+- Pin the version explicitly in the install command for reproducibility —
+  use only a version number given to you above or found verbatim in the
+  README/repo tree; never invent or guess one
 - %runscript must be: exec <command> \"\$@\"
 - %test must be a real invocation that exits 0 (prefer '<command> --help';
   if the tool has no top-level --help flag, use a bare invocation that
@@ -472,8 +404,9 @@ Hard requirements (always apply):
 Pick exactly ONE pattern (0-4) per the template's decision rules. In short:
 - Pattern 0 if an upstream def/Dockerfile was found above — adapt it.
 - Pattern 4 if a bioconda package was found above — miniforge3 + mamba, never miniconda3 + conda.
+- Pattern 1 if a PyPI release was found above — use that exact package name/version.
 - Pattern 3 if source-derived dependencies were found above — use that exact list, not README guesses.
-- Otherwise Pattern 1 (PyPI) or Pattern 2 (GitHub source with packaging file), whichever applies.
+- Otherwise Pattern 2 (GitHub source with packaging file).
 
 ## Template:
 $(cat "$TEMPLATE")
@@ -504,6 +437,21 @@ if [[ ! -s "$DEF_FILE" ]]; then
     exit 1
 fi
 
+# Claude sometimes can't produce a valid .def (e.g. it needs a tool call —
+# like looking up a version number or commit SHA — that isn't approved in
+# a headless run) and responds with a clarifying question instead. Catch
+# that here rather than reporting false success: real output always starts
+# with "Bootstrap:" per the hard requirements above.
+if [[ "$(head -1 "$DEF_FILE")" != Bootstrap:* ]]; then
+    echo "ERROR: Claude did not produce a valid .def file — it responded instead of generating one:" >&2
+    echo "---" >&2
+    cat "$DEF_FILE" >&2
+    echo "---" >&2
+    rm -f "$DEF_FILE"
+    rmdir "$DEF_DIR" 2>/dev/null || true
+    exit 1
+fi
+
 echo ""
 echo "Created: $DEF_FILE"
 echo "---"
@@ -511,4 +459,4 @@ cat "$DEF_FILE"
 echo "---"
 echo ""
 echo "This was generated, not built. Review it, then build with:"
-echo "  ./apptainer_build.sh   (after setting TOOL=\"$TOOL\" at the top)"
+echo "  ./apptainer_build.sh   (with GITHUB_URL=\"$GITHUB_URL\" set in config.sh)"

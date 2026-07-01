@@ -23,7 +23,10 @@ From: ubuntu:22.04
 #   mkdir line. Do not re-derive install steps the upstream authors
 #   already solved.
 #
-# Pattern 1 — PyPI release, modern wheel available (From: ubuntu:22.04):
+# Pattern 1 — PyPI release, modern wheel available (From: ubuntu:22.04).
+#   create_def_file.sh no longer auto-checks PyPI (its only input is a
+#   GitHub URL, not a name to search with) — only pick this pattern if
+#   the README itself explicitly confirms a PyPI release:
 #   apt-get install python3 python3-pip git ca-certificates
 #   pip3 install --no-cache-dir <Tool>==<Version>
 #

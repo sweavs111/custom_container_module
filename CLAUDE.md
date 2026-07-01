@@ -26,16 +26,24 @@ An earlier version of this pipeline (deleted; see git history before this rewrit
 
 Builds and deployments must run from a **login node** — Apptainer needs internet access during `%post`.
 
-1. Edit the two variables at the top of `apptainer_build.sh`:
+The pipeline's sole input is a GitHub repo URL, never a bare tool name. A
+name alone is ambiguous — many bioinformatics tools share a name with
+unrelated projects — so requiring the exact URL up front removes that
+ambiguity entirely. The tool/module name (`tools/<ToolName>/`, `.sif`
+filename, container-mod registration name) is always derived from the URL
+(`derive_tool_name` in `config.sh` — the repo's own name, case preserved)
+and is never typed separately, so it can't drift from the URL it came from.
+
+1. Edit the two variables at the top of `config.sh`:
    ```bash
-   TOOL="ToolName"
+   GITHUB_URL="https://github.com/Shamir-Lab/PlasClass"
    DEPLOY=true   # false to skip module registration
    ```
 2. Run `./apptainer_build.sh` from this directory.
 
 `apptainer_build.sh` handles all steps automatically:
 - Sets `APPTAINER_CACHEDIR`/`APPTAINER_TMPDIR` to scratch (see lesson 1 above) before doing anything else.
-- If `tools/<ToolName>/<ToolName>.def` is missing, calls `create_def_file.sh <ToolName>` to generate it via Claude (gathers real evidence first — see "How `.def` generation works" below), then pauses for you to review the generated file before continuing.
+- Derives `TOOL` from `GITHUB_URL`. If `tools/<ToolName>/<ToolName>.def` is missing, calls `create_def_file.sh <GitHubURL>` to generate it via Claude (gathers real evidence first — see "How `.def` generation works" below), then pauses for you to review the generated file before continuing.
 - Extracts `Version` from the `.def` labels and names the output `tools/<ToolName>/<ToolName>-<Version>.sif`.
 - Appends the full build command trace to `container_build.log`.
 - If `DEPLOY=true` and the container-mod repos metadata file is missing, calls `create_repos_entry.sh` to generate it by parsing the `.def` directly.
@@ -45,19 +53,17 @@ Builds and deployments must run from a **login node** — Apptainer needs intern
 
 ## How `.def` generation works
 
-`create_def_file.sh <ToolName> [--github-url <URL>]` gathers evidence, in this order, before ever calling Claude:
+`create_def_file.sh <GitHubURL>` derives `TOOL` from the URL, then gathers evidence, in this order, before ever calling Claude:
 
-1. **PyPI lookup** — checks `pypi.org/pypi/<tool>/json` for a release.
-2. **GitHub resolution** — from PyPI metadata, or a ranked GitHub search fallback if not on PyPI.
-3. **Repo tree fetch** — `git/trees/<default_branch>?recursive=1`, used for everything below.
-4. **Upstream container def check** (Pattern 0) — searches the tree for `*.def` or `Dockerfile`.
-5. **Bioconda check** (Pattern 4) — `api.anaconda.org/package/bioconda/<tool>`, independent of PyPI, since many bioinformatics tools are bioconda-preferred even with a PyPI release.
-6. **Packaging file check** — `setup.py`/`pyproject.toml`/`requirements.txt`/`setup.cfg` anywhere in the tree.
-7. **Import-based dependency discovery** (Pattern 3) — only runs if 1, 5, and 6 all came up empty: downloads the repo's `.py` files and parses real imports via `ast`, filtering stdlib and local names.
-8. **README fetch** — supplementary context, not authoritative when 4/5/7 found something.
-9. **Bioinformatics relevance check** — aborts if the tool is clearly unrelated to life sciences (fails open if Claude is unreachable).
+1. **Repo tree fetch** — `git/trees/<default_branch>?recursive=1`, used for everything below.
+2. **Upstream container def check** (Pattern 0) — searches the tree for `*.def` or `Dockerfile`.
+3. **Bioconda check** (Pattern 4) — `api.anaconda.org/package/bioconda/<tool>`.
+4. **Packaging file check** — `setup.py`/`pyproject.toml`/`requirements.txt`/`setup.cfg` anywhere in the tree.
+5. **Import-based dependency discovery** (Pattern 3) — only runs if 3 and 4 both came up empty: downloads the repo's `.py` files and parses real imports via `ast`, filtering stdlib and local names.
+6. **README fetch** — supplementary context, not authoritative when 2/3/5 found something.
+7. **Bioinformatics relevance check** — aborts if the tool is clearly unrelated to life sciences (fails open if Claude is unreachable).
 
-Everything found in steps 4/5/7 is passed to Claude marked `AUTHORITATIVE`, with explicit instructions to prefer it over README-derived guesses. See `template.def` for the full 5-pattern decision tree (0: adapt upstream def, 1: PyPI, 2: GitHub source with packaging, 3: GitHub source without packaging — use discovered imports, 4: bioconda via miniforge3+mamba).
+Everything found in steps 2/3/5 is passed to Claude marked `AUTHORITATIVE`, with explicit instructions to prefer it over README-derived guesses. See `template.def` for the full 5-pattern decision tree (0: adapt upstream def, 1: PyPI, 2: GitHub source with packaging, 3: GitHub source without packaging — use discovered imports, 4: bioconda via miniforge3+mamba). Pattern 1 (PyPI) is no longer auto-detected — there's no name to search PyPI with — so Claude only picks it when the README itself explicitly confirms a PyPI release.
 
 The script only writes the `.def` — it does not build. Review the output before running `apptainer_build.sh`.
 
@@ -88,7 +94,7 @@ Start from `template.def` — it documents all 5 install patterns with the decis
 
 | Script | Purpose |
 |--------|---------|
-| `create_def_file.sh <ToolName>` | Generates `tools/<ToolName>/<ToolName>.def` — see "How `.def` generation works" above. |
+| `create_def_file.sh <GitHubURL>` | Generates `tools/<ToolName>/<ToolName>.def` for the given repo (tool name derived from the URL) — see "How `.def` generation works" above. |
 | `create_repos_entry.sh <def_file> <output_path>` | Generates the container-mod metadata file (Description, Home Page, Programs) by parsing the `.def` directly — no Claude required, was never implicated in the old failures. |
 
 Both scripts require the `claude` CLI (`/home/sdweave2/.local/bin/claude`, or on `PATH`) and outbound internet access (login node only).
@@ -99,7 +105,7 @@ Both scripts require the `claude` CLI (`/home/sdweave2/.local/bin/claude`, or on
 custom_container_module/
 ├── apptainer_build.sh        # main build/deploy wrapper
 ├── config.sh                 # site-specific paths, cache/tmp dirs (edit before use)
-├── create_def_file.sh        # auto-generates .def via Claude + PyPI/GitHub/bioconda/import evidence
+├── create_def_file.sh        # auto-generates .def via Claude + upstream-def/bioconda/import evidence
 ├── create_repos_entry.sh     # auto-generates container-mod metadata by parsing the .def
 ├── template.def              # canonical .def template with the 5 install patterns
 ├── container_build.log       # timestamped build+deploy audit trail

@@ -13,6 +13,10 @@ Scripts for building and deploying [Apptainer](https://apptainer.org/) container
 Before first use, edit `config.sh` to match your environment:
 
 ```bash
+# --- Edit before each build ---
+GITHUB_URL=""  # e.g. "https://github.com/Shamir-Lab/PlasClass"
+DEPLOY=true    # false to skip module registration
+
 # Path to the container-mod executable
 CONTAINER_MOD="/path/to/container-mod"
 
@@ -36,11 +40,12 @@ Apptainer's default image cache lives at `$HOME/.apptainer`. Home on Hazel has a
 
 ## Adding a New Tool
 
-1. Edit the two variables at the top of `apptainer_build.sh`:
+1. Edit the two variables at the top of `config.sh`:
    ```bash
-   TOOL="ToolName"
+   GITHUB_URL="https://github.com/Shamir-Lab/PlasClass"
    DEPLOY=true   # false to skip module registration
    ```
+   The GitHub URL is the sole identifier — the tool/module name (`tools/<ToolName>/`, `.sif` filename, container-mod registration name) is always derived from it automatically, never typed separately. This removes the ambiguity of matching a plain tool name to the right repo when several same-named projects exist.
 
 2. Run the build wrapper:
    ```bash
@@ -76,7 +81,7 @@ apptainer build tools/<ToolName>/<ToolName>-<Version>.sif tools/<ToolName>/<Tool
 custom_container_module/
 ├── apptainer_build.sh        # main build/deploy wrapper
 ├── config.sh                 # site-specific paths, cache/tmp dirs (edit before use)
-├── create_def_file.sh        # auto-generates .def via Claude + PyPI/GitHub/bioconda/import evidence
+├── create_def_file.sh        # auto-generates .def via Claude + upstream-def/bioconda/import evidence
 ├── create_repos_entry.sh     # auto-generates container-mod metadata by parsing the .def
 ├── template.def              # canonical .def template — documents 5 install patterns
 ├── tools/
@@ -107,7 +112,9 @@ Five install patterns, in preference order (`template.def` has the full decision
 # Pattern 0 — upstream repo ships its own container def (Dockerfile / *.def):
 # adapt it directly rather than re-deriving install steps from scratch.
 
-# Pattern 1 — PyPI release with a modern wheel (From: ubuntu:22.04):
+# Pattern 1 — PyPI release with a modern wheel (From: ubuntu:22.04). Only
+# used when the README explicitly confirms a PyPI release — this is no
+# longer checked automatically since input is a GitHub URL, not a name:
 pip3 install --no-cache-dir <Tool>==<Version>
 
 # Pattern 2 — GitHub source with setup.py/pyproject.toml, no PyPI release:
@@ -130,7 +137,7 @@ mamba create -n <tool> -y -c conda-forge -c bioconda <pkg>=<ver>
 
 | Script | Purpose |
 |--------|---------|
-| `create_def_file.sh <ToolName> [--github-url <URL>]` | Generates `tools/<ToolName>/<ToolName>.def`. Gathers real evidence first — checks for an upstream container def, checks bioconda independently of PyPI, and for unpackaged GitHub-source repos, parses actual `import` statements in the source rather than trusting the README — then hands all of that to Claude marked as authoritative. See `CLAUDE.md` for the full evidence-gathering order. |
+| `create_def_file.sh <GitHubURL>` | Generates `tools/<ToolName>/<ToolName>.def` for the given repo (the tool name is derived from the URL). Gathers real evidence first — checks for an upstream container def, checks bioconda, and for unpackaged GitHub-source repos, parses actual `import` statements in the source rather than trusting the README — then hands all of that to Claude marked as authoritative. See `CLAUDE.md` for the full evidence-gathering order. |
 | `create_repos_entry.sh <def_file> <output_path>` | Generates the container-mod metadata file (Description, Home Page, Programs) by parsing the `.def` directly — no Claude required |
 
 `create_def_file.sh` only writes the `.def` — it does not build. Always review the generated file, then build with `apptainer_build.sh` (or manually) to verify it actually works before deploying.
