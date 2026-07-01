@@ -293,30 +293,6 @@ PYEOF
     fi
 fi
 
-# --- Bioinformatics relevance check ---
-# Aborts early if the discovered tool is clearly not life-sciences related.
-# Fails open (proceeds) if Claude is unreachable or returns an unexpected response.
-if [[ -z "$GITHUB_README" ]]; then
-    echo "  README fetch failed — skipping bio check (proceeding)"
-else
-    echo "Checking bioinformatics relevance..."
-    BIO_CONTEXT="Tool: $TOOL
-README excerpt:
-$(echo "$GITHUB_README" | head -c 1000)"
-
-    BIO_RESPONSE=$("$CLAUDE" -p "Is the following tool relevant to bioinformatics, genomics, proteomics, metagenomics, transcriptomics, structural biology, computational biology, or life sciences research? Respond with a single word: YES or NO.
-
-$BIO_CONTEXT" 2>/dev/null || true)
-
-    if [[ -n "$BIO_RESPONSE" ]] && echo "$BIO_RESPONSE" | grep -qiE '^\s*no\b'; then
-        echo "ERROR: '$TOOL' does not appear to be a bioinformatics tool — discarding." >&2
-        echo "       If the wrong repo was selected, re-run with the correct GitHub URL." >&2
-        rmdir "$DEF_DIR" 2>/dev/null || true
-        exit 1
-    fi
-    echo "  Confirmed bioinformatics relevance."
-fi
-
 # --- Assemble context ---
 CONTEXT=""
 if [[ -n "$UPSTREAM_DEF_CONTENT" ]]; then

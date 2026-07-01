@@ -61,7 +61,6 @@ and is never typed separately, so it can't drift from the URL it came from.
 4. **Packaging file check** — `setup.py`/`pyproject.toml`/`requirements.txt`/`setup.cfg` anywhere in the tree.
 5. **Import-based dependency discovery** (Pattern 3) — only runs if 3 and 4 both came up empty: downloads the repo's `.py` files and parses real imports via `ast`, filtering stdlib and local names.
 6. **README fetch** — supplementary context, not authoritative when 2/3/5 found something.
-7. **Bioinformatics relevance check** — aborts if the tool is clearly unrelated to life sciences (fails open if Claude is unreachable).
 
 Everything found in steps 2/3/5 is passed to Claude marked `AUTHORITATIVE`, with explicit instructions to prefer it over README-derived guesses. See `template.def` for the full 5-pattern decision tree (0: adapt upstream def, 1: PyPI, 2: GitHub source with packaging, 3: GitHub source without packaging — use discovered imports, 4: bioconda via miniforge3+mamba). Pattern 1 (PyPI) is no longer auto-detected — there's no name to search PyPI with — so Claude only picks it when the README itself explicitly confirms a PyPI release.
 
