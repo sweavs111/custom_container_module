@@ -1,0 +1,70 @@
+Bootstrap: docker
+From: continuumio/miniconda3:23.5.2-0
+
+%labels
+    Maintainer sdweave2@ncsu.edu
+    Source https://github.com/michaelkyu/PlasX
+    Version 0.1
+
+%help
+    PlasX — machine learning classifier for identifying plasmid sequences
+    based on genetic architecture. Returns a score per contig; scores closer
+    to 1 indicate plasmid, scores closer to 0 indicate chromosome.
+
+    Usage:
+        apptainer run PlasX-0.1.sif <subcommand> [options]
+
+    Subcommands:
+        setup                    Download a pretrained PlasX model
+        search_de_novo_families  Annotate genes to de novo families
+        predict                  Run trained PlasX model on annotated sequences
+
+    Options:
+        -h, --help               Show help and exit
+
+    Example:
+        apptainer run PlasX-0.1.sif setup
+        apptainer run PlasX-0.1.sif predict --help
+
+%post
+    export DEBIAN_FRONTEND=noninteractive
+
+    # Hazel bind-mount points
+    mkdir -p /rs1 /share /home /usr/local/usrapps
+
+    # git is needed to clone the PlasX repository
+    apt-get update -qq && \
+        apt-get install -y --no-install-recommends git && \
+        apt-get clean && \
+        rm -rf /var/lib/apt/lists/*
+
+    # Create conda environment with all dependencies as specified in the README.
+    # mmseqs2=10.6d92c must come from bioconda; --override-channels + strict
+    # priority match the README exactly to avoid solver conflicts.
+    conda create -n plasx -y \
+        -c anaconda -c conda-forge -c bioconda \
+        --override-channels \
+        --strict-channel-priority \
+        numpy \
+        pandas \
+        scipy \
+        scikit-learn \
+        numba \
+        python-blosc \
+        "mmseqs2=10.6d92c"
+
+    # Clone PlasX and install the plasx CLI into the conda environment
+    git clone --depth 1 https://github.com/michaelkyu/PlasX.git /opt/PlasX
+    /opt/conda/envs/plasx/bin/pip install --no-cache-dir /opt/PlasX
+
+    conda clean -afy
+
+%environment
+    export PATH=/opt/conda/envs/plasx/bin:$PATH
+    export CONDA_DEFAULT_ENV=plasx
+
+%runscript
+    exec plasx "$@"
+
+%test
+    plasx --help

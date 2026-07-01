@@ -9,10 +9,18 @@ fi
 module load apptainer
 export APPTAINER_BINDPATH=""   # required — Hazel's apptainer config sets a bind path that breaks builds
 
+# Cache/tmp dirs MUST be off $HOME (1GB quota) — see config.sh comment.
+# This was the root cause of most v0 "exit 255" failures: pulling Docker
+# base images into the default $HOME/.apptainer cache silently filled the
+# quota mid-build.
+export APPTAINER_CACHEDIR="$APPTAINER_CACHEDIR"
+export APPTAINER_TMPDIR="$APPTAINER_TMPDIR"
+mkdir -p "$APPTAINER_CACHEDIR" "$APPTAINER_TMPDIR"
+
 ### --- Edit this section ---
-TOOL="fastaaiv2"
+TOOL="ToolName"
 DEPLOY=true   # set to false to skip container-mod module generation after build
-GITHUB_URL="https://github.com/KGerhardt/fastaaiv2"  # optional: set to the exact GitHub URL if auto-search picks the wrong repo
+GITHUB_URL=""  # optional: set to the exact GitHub URL if auto-search picks the wrong repo
 
 ### --- Derived paths ---
 DEF="tools/${TOOL}/${TOOL}.def"
@@ -24,6 +32,11 @@ if [[ ! -f "$DEF" ]]; then
     create_args=("$TOOL")
     [[ -n "${GITHUB_URL:-}" ]] && create_args+=(--github-url "$GITHUB_URL")
     "$(dirname "$0")/create_def_file.sh" "${create_args[@]}" || exit 1
+    echo ""
+    echo "A .def file was generated but NOT reviewed. Re-run after checking"
+    echo "tools/${TOOL}/${TOOL}.def, or Ctrl-C now to review first."
+    read -r -p "Continue with build? [y/N] " REPLY
+    [[ "$REPLY" =~ ^[Yy]$ ]] || exit 0
 fi
 
 ### --- Extract version from .def ---

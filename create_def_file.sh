@@ -1,6 +1,6 @@
 #!/bin/bash
-# Generates an Apptainer .def file for a given tool by fetching installation
-# info from PyPI and/or GitHub and synthesizing with Claude.
+# Generates an Apptainer .def file for a given tool by gathering real,
+# verifiable evidence about how to install it, then synthesizing with Claude.
 #
 # Usage:   create_def_file.sh <ToolName> [--github-url <URL>]
 # Creates: tools/<ToolName>/<ToolName>.def  (relative to CWD)
@@ -8,6 +8,16 @@
 # Options:
 #   --github-url <URL>   Skip GitHub search and use this URL directly.
 #                        Useful when multiple repos share a similar name.
+#
+# Design notes (see CLAUDE.md "Lessons from empirical builds" for the full
+# story — these rules were derived from real apptainer builds, not guessed):
+#   - Prefer an upstream-shipped container def over writing one from scratch.
+#   - Prefer bioconda + miniforge3/mamba over PyPI/pip when both exist,
+#     but NEVER continuumio/miniconda3 + classic conda (solver can hang
+#     indefinitely on the combined bioconda+conda-forge index).
+#   - For GitHub-source repos with no setup.py/pyproject.toml/requirements.txt,
+#     never guess dependencies from the README — grep the actual import
+#     statements in the repo's .py files for the real list.
 
 set -euo pipefail
 
@@ -64,6 +74,13 @@ if [[ -f "$DEF_FILE" ]]; then
 fi
 
 mkdir -p "$DEF_DIR"
+CLEANUP_FILES=()
+cleanup() {
+    for f in "${CLEANUP_FILES[@]:-}"; do
+        [[ -n "$f" ]] && rm -rf "$f"
+    done
+}
+trap cleanup EXIT
 
 # --- Search PyPI ---
 echo "Searching PyPI for '$TOOL'..."
@@ -79,7 +96,7 @@ done
 
 # --- Cross-validate PyPI result against provided GitHub URL ---
 # If --github-url was given but the PyPI package's listed URLs don't reference it,
-# the PyPI hit is an unrelated package — discard it to avoid wrong installs (e.g. Phanta).
+# the PyPI hit is an unrelated package — discard it to avoid wrong installs.
 if [[ -n "$GITHUB_URL_OVERRIDE" && -n "$PYPI_JSON" ]]; then
     URL_MATCH=$(echo "$PYPI_JSON" | python3 -c "
 import json, sys
@@ -141,9 +158,6 @@ if [[ -z "$GITHUB_URL" ]]; then
         "https://api.github.com/search/repositories?q=${TOOL_LOWER}&sort=stars&per_page=10" \
         2>/dev/null || true)
     if [[ -n "$SEARCH_JSON" ]]; then
-        # Rank by name similarity: exact > prefix/suffix > contains > other.
-        # Within each tier, prefer higher star count.
-        # Outputs two lines: a status line (OK: or WARN:<msg>), then the URL.
         SEARCH_RESULT=$(echo "$SEARCH_JSON" | python3 -c "
 import json, sys
 items = json.load(sys.stdin).get('items', [])
@@ -186,20 +200,158 @@ if [[ -z "$PYPI_JSON" && -z "$GITHUB_URL" ]]; then
     exit 1
 fi
 
-# --- Fetch README from GitHub ---
-GITHUB_README=""
+# --- Repo tree + default branch (single source of truth for everything below) ---
+REPO_PATH=""
+DEFAULT_BRANCH="main"
+TREE_PATHS_FILE=""
 if [[ -n "$GITHUB_URL" ]]; then
     REPO_PATH=$(echo "$GITHUB_URL" | sed 's|https://github.com/||')
-    for branch in main master; do
-        readme=$(curl -sf \
-            "https://raw.githubusercontent.com/$REPO_PATH/$branch/README.md" \
-            2>/dev/null || true)
-        if [[ -n "$readme" ]]; then
-            GITHUB_README=$(echo "$readme" | head -c 4000)
-            echo "  Fetched README ($branch)"
-            break
-        fi
-    done
+    REPO_META=$(curl -sf "https://api.github.com/repos/$REPO_PATH" 2>/dev/null || true)
+    if [[ -n "$REPO_META" ]]; then
+        DEFAULT_BRANCH=$(echo "$REPO_META" | python3 -c "import json,sys; print(json.load(sys.stdin).get('default_branch') or 'main')" 2>/dev/null || echo "main")
+    fi
+
+    TREE_JSON=$(curl -sf "https://api.github.com/repos/$REPO_PATH/git/trees/$DEFAULT_BRANCH?recursive=1" 2>/dev/null || true)
+    if [[ -n "$TREE_JSON" ]]; then
+        TREE_PATHS_FILE=$(mktemp)
+        CLEANUP_FILES+=("$TREE_PATHS_FILE")
+        echo "$TREE_JSON" | python3 -c "
+import json, sys
+try:
+    data = json.load(sys.stdin)
+except Exception:
+    sys.exit(0)
+for item in data.get('tree', []):
+    if item.get('type') == 'blob':
+        print(item['path'])
+" 2>/dev/null > "$TREE_PATHS_FILE" || true
+    fi
+fi
+
+# --- Fetch README ---
+GITHUB_README=""
+if [[ -n "$GITHUB_URL" ]]; then
+    GITHUB_README=$(curl -sf \
+        "https://raw.githubusercontent.com/$REPO_PATH/$DEFAULT_BRANCH/README.md" \
+        2>/dev/null | head -c 4000 || true)
+    [[ -n "$GITHUB_README" ]] && echo "  Fetched README ($DEFAULT_BRANCH)"
+fi
+
+# --- Check for an upstream-shipped container definition (Pattern 0) ---
+# If the tool's own repo already ships a Dockerfile or Apptainer/Singularity
+# def, adapting it beats re-deriving install steps from scratch — this is
+# how jaeger's def was built and it's the one tool that never needed
+# debugging.
+UPSTREAM_DEF_PATH=""
+UPSTREAM_DEF_CONTENT=""
+if [[ -n "${TREE_PATHS_FILE:-}" && -s "$TREE_PATHS_FILE" ]]; then
+    UPSTREAM_DEF_PATH=$(grep -iE '\.def$' "$TREE_PATHS_FILE" | grep -iE '(singularity|apptainer)' | head -1 || true)
+    [[ -z "$UPSTREAM_DEF_PATH" ]] && UPSTREAM_DEF_PATH=$(grep -iE '\.def$' "$TREE_PATHS_FILE" | head -1 || true)
+    [[ -z "$UPSTREAM_DEF_PATH" ]] && UPSTREAM_DEF_PATH=$(grep -iE '(^|/)Dockerfile$' "$TREE_PATHS_FILE" | head -1 || true)
+    if [[ -n "$UPSTREAM_DEF_PATH" ]]; then
+        echo "  Found upstream container definition: $UPSTREAM_DEF_PATH"
+        UPSTREAM_DEF_CONTENT=$(curl -sf "https://raw.githubusercontent.com/$REPO_PATH/$DEFAULT_BRANCH/$UPSTREAM_DEF_PATH" 2>/dev/null | head -c 6000 || true)
+    fi
+fi
+
+# --- Check bioconda (Pattern 4) ---
+# Independent of PyPI — many bioinformatics tools are bioconda-only or
+# bioconda-preferred even when a (stale/harder-to-build) PyPI release exists.
+CONDA_PACKAGE=""
+CONDA_VERSION=""
+for candidate in "$TOOL_LOWER" "$TOOL"; do
+    CONDA_JSON=$(curl -sf "https://api.anaconda.org/package/bioconda/$candidate" 2>/dev/null || true)
+    if [[ -n "$CONDA_JSON" ]]; then
+        CONDA_PACKAGE="$candidate"
+        CONDA_VERSION=$(echo "$CONDA_JSON" | python3 -c "import json,sys; print(json.load(sys.stdin).get('latest_version') or '')" 2>/dev/null || true)
+        echo "  Found on bioconda: $candidate=$CONDA_VERSION"
+        break
+    fi
+done
+
+# --- Check for a packaging file (setup.py/pyproject.toml/requirements.txt) ---
+HAS_PACKAGING=false
+if [[ -n "${TREE_PATHS_FILE:-}" ]] && grep -qiE '(^|/)(setup\.py|pyproject\.toml|requirements\.txt|setup\.cfg)$' "$TREE_PATHS_FILE" 2>/dev/null; then
+    HAS_PACKAGING=true
+fi
+
+# --- Import-based dependency discovery (Pattern 3) ---
+# Only when there's no PyPI release, no bioconda package, and no packaging
+# file — i.e. a "flat script" repo where the README's stated requirements
+# can't be cross-checked against anything authoritative. Ground truth is
+# the actual import statements in the source.
+DISCOVERED_DEPS=""
+if [[ -z "$PYPI_JSON" && -z "$CONDA_PACKAGE" && "$HAS_PACKAGING" == false && -n "${TREE_PATHS_FILE:-}" && -s "$TREE_PATHS_FILE" ]]; then
+    echo "No PyPI/bioconda package or packaging file found — scanning source imports for real dependencies..."
+    IMPORT_TMPDIR=$(mktemp -d)
+    CLEANUP_FILES+=("$IMPORT_TMPDIR")
+
+    grep -E '\.py$' "$TREE_PATHS_FILE" \
+        | grep -viE '(^|/)(test|tests|docs|examples?)(/|$)' \
+        | head -60 > "$IMPORT_TMPDIR/py_files.txt" || true
+
+    while IFS= read -r relpath; do
+        [[ -z "$relpath" ]] && continue
+        outfile="$IMPORT_TMPDIR/$(echo "$relpath" | tr '/' '_')"
+        curl -sf --max-filesize 65536 "https://raw.githubusercontent.com/$REPO_PATH/$DEFAULT_BRANCH/$relpath" -o "$outfile" 2>/dev/null || true
+    done < "$IMPORT_TMPDIR/py_files.txt"
+
+    DISCOVERED_DEPS=$(python3 - "$TREE_PATHS_FILE" "$IMPORT_TMPDIR" <<'PYEOF'
+import sys, os, ast
+
+tree_file, tmpdir = sys.argv[1], sys.argv[2]
+paths = [l.strip() for l in open(tree_file) if l.strip().endswith('.py')]
+
+local_names = set()
+for p in paths:
+    local_names.add(os.path.basename(p)[:-3])
+    parts = p.split('/')
+    if len(parts) > 1:
+        local_names.add(parts[0])
+
+STDLIB = {
+    'os', 'sys', 're', 'json', 'argparse', 'collections', 'itertools', 'functools', 'math',
+    'random', 'time', 'datetime', 'subprocess', 'shutil', 'glob', 'csv', 'io', 'gzip', 'bz2',
+    'zipfile', 'tarfile', 'sqlite3', 'logging', 'multiprocessing', 'threading', 'queue',
+    'socket', 'struct', 'copy', 'pickle', 'typing', 'dataclasses', 'enum', 'abc', 'contextlib',
+    'pathlib', 'tempfile', 'warnings', 'traceback', 'unittest', 'string', 'textwrap', 'operator',
+    'heapq', 'bisect', 'array', 'ctypes', 'platform', 'getpass', 'hashlib', 'hmac', 'base64',
+    'uuid', 'urllib', 'http', 'xml', 'html', 'configparser', 'shlex', 'signal', 'errno', 'stat',
+    'fnmatch', 'decimal', 'fractions', 'statistics', 'importlib', 'inspect', 'ast', 'dis', 'gc',
+    'weakref', 'asyncio', 'concurrent', 'select', 'selectors', 'ssl', 'email', 'mimetypes',
+    'webbrowser', 'cProfile', 'profile', 'pstats', 'timeit', 'doctest', 'pdb', 'venv',
+    'ensurepip', 'distutils', 'sysconfig', 'code', 'codeop', 'pkgutil', 'runpy', '__future__',
+    'builtins', 'copyreg', 'numbers', 'cmath',
+}
+
+found = set()
+for p in paths:
+    fname = os.path.join(tmpdir, p.replace('/', '_'))
+    if not os.path.isfile(fname):
+        continue
+    try:
+        tree = ast.parse(open(fname, encoding='utf-8', errors='ignore').read())
+    except SyntaxError:
+        continue
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                found.add(alias.name.split('.')[0])
+        elif isinstance(node, ast.ImportFrom):
+            if node.level and node.level > 0:
+                continue
+            if node.module:
+                found.add(node.module.split('.')[0])
+
+for name in sorted(found - local_names - STDLIB):
+    print(name)
+PYEOF
+)
+    if [[ -n "$DISCOVERED_DEPS" ]]; then
+        echo "  Discovered external imports: $(echo "$DISCOVERED_DEPS" | tr '\n' ' ')"
+    else
+        echo "  No external imports detected"
+    fi
 fi
 
 # --- Bioinformatics relevance check ---
@@ -220,7 +372,6 @@ $(echo "$GITHUB_README" | head -c 1000)"
 
 $BIO_CONTEXT" 2>/dev/null || true)
 
-    # Fail open: if Claude is unreachable or returns empty, proceed without blocking.
     if [[ -n "$BIO_RESPONSE" ]] && echo "$BIO_RESPONSE" | grep -qiE '^\s*no\b'; then
         echo "ERROR: '$TOOL' does not appear to be a bioinformatics tool — discarding." >&2
         echo "       If the wrong repo was selected, re-run with --github-url <correct-url>." >&2
@@ -232,6 +383,35 @@ fi
 
 # --- Assemble context ---
 CONTEXT=""
+if [[ -n "$UPSTREAM_DEF_CONTENT" ]]; then
+    CONTEXT+="## AUTHORITATIVE: upstream already ships a container definition at $UPSTREAM_DEF_PATH
+Adapt this directly — keep its install logic intact. Only add/change: our
+Maintainer label, the Hazel bind-mount mkdir line in %post, and %labels
+Source/Version to match our conventions. Do not re-derive install steps.
+
+$UPSTREAM_DEF_CONTENT
+
+"
+fi
+if [[ -n "$CONDA_PACKAGE" ]]; then
+    CONTEXT+="## AUTHORITATIVE: bioconda package found
+Package: $CONDA_PACKAGE
+Version: $CONDA_VERSION
+Use Pattern 4 (miniforge3 + mamba) from the template — do NOT use
+continuumio/miniconda3 + classic conda, its solver can hang indefinitely
+on this channel combination.
+
+"
+fi
+if [[ -n "$DISCOVERED_DEPS" ]]; then
+    CONTEXT+="## AUTHORITATIVE: real dependencies discovered from source imports
+This repo has no setup.py/pyproject.toml/requirements.txt, so these were
+extracted by parsing actual import statements in the repo's .py files —
+use this list, not whatever the README implies:
+$DISCOVERED_DEPS
+
+"
+fi
 if [[ -n "$PYPI_JSON" ]]; then
     CONTEXT+="## PyPI key facts (use these verbatim — do not re-derive from JSON):
 Version: ${PYPI_VERSION}
@@ -243,7 +423,7 @@ $(echo "$PYPI_JSON" | head -c 3000)
 "
 fi
 if [[ -n "$GITHUB_URL" ]]; then
-    CONTEXT+="## GitHub repository: $GITHUB_URL
+    CONTEXT+="## GitHub repository: $GITHUB_URL (default branch: $DEFAULT_BRANCH)
 
 "
 fi
@@ -259,53 +439,41 @@ echo "Generating .def file with Claude..."
 
 "$CLAUDE" -p "Generate a complete Apptainer .def file for the tool '$TOOL'.
 
-Use the template below as a structural guide. Replace all <PLACEHOLDER> values with real content. Do not leave any placeholders in the output.
+Use the template below as a structural guide — it documents 5 install
+patterns (0-4) with explicit decision rules refined from real builds.
+Replace all <PLACEHOLDER> values with real content. Do not leave any
+placeholders in the output.
 
 Source hierarchy — when information conflicts, follow this order:
-1. GitHub README — authoritative for install method, tool entrypoints, and conda/pip preference.
-2. PyPI metadata — supplementary only; if it conflicts with the README, trust the README.
-3. GitHub URL — use to confirm you have the correct package when the PyPI name is ambiguous.
+1. Any section above marked AUTHORITATIVE (upstream def, bioconda hit, or
+   source-derived dependency list) — these are verified facts, not inference.
+2. GitHub README — for install method and tool entrypoints when nothing
+   AUTHORITATIVE covers it.
+3. PyPI metadata — supplementary only; if it conflicts with the README or
+   an AUTHORITATIVE section, trust those instead.
 
-PyPI package identity rule: If the PyPI home_page or project_urls do not reference the GitHub URL provided above, the PyPI entry is for a different, unrelated package. Discard its version, install instructions, and dependencies. Derive everything from the GitHub README and URL instead.
+PyPI package identity rule: If the PyPI home_page or project_urls do not
+reference the GitHub URL provided above, the PyPI entry is for a different,
+unrelated package. Discard its version, install instructions, and
+dependencies. Derive everything from the GitHub README and URL instead.
 
 Hard requirements (always apply):
 - Bootstrap: docker
 - Maintainer: sdweave2@ncsu.edu
-- Version to install: ${PYPI_VERSION:-extract from tool information above}
 - Version label in %labels must equal the installed version exactly
 - %post must include: mkdir -p /rs1 /share /home /usr/local/usrapps
 - Pin the version explicitly in the install command for reproducibility
 - %runscript must be: exec <command> \"\$@\"
-- %test must be: <command> --help (omit %test if the tool has no --help flag)
+- %test must be a real invocation that exits 0 (prefer '<command> --help';
+  if the tool has no top-level --help flag, use a bare invocation that
+  prints usage and exits cleanly instead of guessing a flag that doesn't exist)
 - Output ONLY the .def file content — no explanation, no markdown fences, no commentary
 
-Choose the install workflow that best matches what the tool's README or PyPI metadata recommends.
-
-IMPORTANT decision rule — follow in order:
-- If the README contains 'conda install', '-c bioconda', a Bioconda badge, or any conda-based install example: use Pattern 5. This is the authoritative signal that conda is the intended distribution path.
-- If the PyPI dependencies pin very old versions (numpy<1.20, numpy<=1.17, scipy<1.5, scipy<=1.4, or similar): the PyPI wheel will fail to build on Ubuntu 22.04. Use Pattern 5 (conda) or Pattern 2/3 (GitHub source) instead.
-- If a git clone is needed inside %post on ubuntu:22.04, always include ca-certificates in the apt install AND call \`update-ca-certificates\` immediately after the apt-get block, before any git clone command.
-- Whenever %post uses pip install from source inside a conda environment (pip install git+URL, pip install /opt/..., or pip install .), always add c-compiler and cxx-compiler from conda-forge to the conda create call — do not try to infer whether C extensions are present.
-
-1. PyPI release (From: ubuntu:22.04) — when a recent PyPI wheel exists with no ancient pinned deps:
-   apt-get install python3 python3-dev python3-pip build-essential git ca-certificates + pip3 install --no-cache-dir <Tool>==<Version>
-
-2. GitHub source via pip (From: ubuntu:22.04) — when no PyPI release exists but a setup.py/pyproject.toml does:
-   apt-get install python3 python3-dev python3-pip build-essential git ca-certificates + pip3 install --no-cache-dir git+<URL>@<tag>
-
-3. Clone + local pip install (From: ubuntu:22.04) — when the repo must be present at runtime (e.g., bundled models/data):
-   apt-get install python3 python3-dev python3-pip build-essential git ca-certificates + git clone --depth 1 --branch <tag> <URL> /opt/<Tool> + pip3 install --no-cache-dir /opt/<Tool>
-
-4. Bare git clone (From: ubuntu:22.04 or other minimal base) — when the tool is a script or binary with no Python packaging:
-   apt-get install any runtime deps (always include ca-certificates) + git clone --depth 1 --branch <tag> <URL> /opt/<Tool> + chmod/PATH in %environment
-
-5. Conda install (From: continuumio/miniconda3:23.5.2-0) — PREFERRED for bioinformatics tools on bioconda, or when deps are too old to compile from source:
-   conda install -n base -y -c conda-forge -c bioconda <pkg>=<ver> + conda clean -afy
-   OR for tools needing an isolated env: conda create -n <env> -y -c conda-forge -c bioconda <pkg>=<ver> ... + conda clean -afy
-   Activate in %environment by prepending /opt/conda/bin or /opt/conda/envs/<env>/bin to PATH
-
-For any workflow using apt-get, always follow the standard cleanup pattern:
-   apt-get update -qq && apt-get install -y --no-install-recommends ... && apt-get clean && rm -rf /var/lib/apt/lists/*
+Pick exactly ONE pattern (0-4) per the template's decision rules. In short:
+- Pattern 0 if an upstream def/Dockerfile was found above — adapt it.
+- Pattern 4 if a bioconda package was found above — miniforge3 + mamba, never miniconda3 + conda.
+- Pattern 3 if source-derived dependencies were found above — use that exact list, not README guesses.
+- Otherwise Pattern 1 (PyPI) or Pattern 2 (GitHub source with packaging file), whichever applies.
 
 ## Template:
 $(cat "$TEMPLATE")
@@ -314,7 +482,6 @@ $(cat "$TEMPLATE")
 $CONTEXT" > "$DEF_FILE"
 
 # Strip markdown fences and any preamble/explanation Claude may have added.
-# Looks for content between ``` fences first; falls back to first Bootstrap: line.
 python3 - "$DEF_FILE" <<'PYEOF'
 import sys, re
 path = sys.argv[1]
@@ -342,3 +509,6 @@ echo "Created: $DEF_FILE"
 echo "---"
 cat "$DEF_FILE"
 echo "---"
+echo ""
+echo "This was generated, not built. Review it, then build with:"
+echo "  ./apptainer_build.sh   (after setting TOOL=\"$TOOL\" at the top)"

@@ -1,0 +1,41 @@
+Bootstrap: docker
+From: condaforge/miniforge3:24.3.0-0
+
+%labels
+    Maintainer sdweave2@ncsu.edu
+    Source https://github.com/Shamir-Lab/PlasClass
+    Version 0.1.1
+
+%help
+    PlasClass — classification of (metagenomic) assembly sequences as
+    plasmid or chromosomal using a k-mer based logistic regression model.
+
+    Usage:
+        apptainer run PlasClass.sif -f <fasta file> [-o <output file>] [-p <num processes>]
+
+    Options:
+        -f/--fasta          Fasta file to classify
+        -o/--outfile        Output file (default: <fasta file>.probs.out)
+        -p/--num_processes  Number of processes to use (default: 8)
+
+    Example:
+        apptainer run PlasClass.sif -f contigs.fasta -o contigs.probs.out -p 4
+
+%post
+    export DEBIAN_FRONTEND=noninteractive
+
+    # Hazel bind-mount points
+    mkdir -p /rs1 /share /home /usr/local/usrapps
+
+    mamba create -n plasclass -y -c conda-forge -c bioconda plasclass=0.1.1
+    mamba clean -afy
+
+%environment
+    export DEBIAN_FRONTEND=noninteractive
+    export PATH="/opt/conda/envs/plasclass/bin:$PATH"
+
+%runscript
+    exec classify_fasta.py "$@"
+
+%test
+    classify_fasta.py --help

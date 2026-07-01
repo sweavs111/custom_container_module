@@ -1,0 +1,66 @@
+Bootstrap: docker
+From: ubuntu:22.04
+
+%labels
+    Maintainer sdweave2@ncsu.edu
+    Source https://github.com/ablab/plasmidVerify
+    Version 1.0
+
+%help
+    plasmidVerify — HMM-based plasmid contig verification tool
+
+    Classifies contigs (output of metaplasmidSPAdes or other assemblers) as
+    plasmidic or chromosomal using Prodigal gene prediction, hmmsearch against
+    the Pfam-A database, and a Naive Bayes classifier.
+
+    NOTE: An external Pfam-A HMM database is required. Download from:
+      https://ftp.ebi.ac.uk/pub/databases/Pfam/releases/
+
+    Usage:
+        apptainer run plasmidVerify.sif -f <input.fasta> -o <output_dir> --hmm <Pfam-A.hmm>
+
+    Options:
+        -f FILE       Input FASTA file
+        -o DIR        Output directory
+        --hmm HMM     Path to Pfam-A HMM database
+        -t INT        Number of threads
+        --db DB       Run BLAST against provided nt database (optional;
+                      requires blastn in PATH and a local nt copy)
+        -h, --help    Show help message and exit
+
+    Example:
+        apptainer run plasmidVerify.sif \
+            -f contigs.fasta \
+            -o results/ \
+            --hmm /rs1/shares/brc/admin/databases/Pfam/Pfam-A.hmm
+
+%post
+    export DEBIAN_FRONTEND=noninteractive
+
+    # Hazel bind-mount points
+    mkdir -p /rs1 /share /home /usr/local/usrapps
+
+    apt-get update -qq && \
+        apt-get install -y --no-install-recommends \
+            ca-certificates \
+            python3 \
+            python-is-python3 \
+            prodigal \
+            hmmer \
+            git && \
+        apt-get clean && \
+        rm -rf /var/lib/apt/lists/*
+
+    # Clone repo — bundled classifier data file must be co-located with script
+    git clone --depth 1 https://github.com/ablab/plasmidVerify /opt/plasmidVerify
+    chmod +x /opt/plasmidVerify/plasmidverify.py
+
+%environment
+    export DEBIAN_FRONTEND=noninteractive
+    export PATH="/opt/plasmidVerify:$PATH"
+
+%runscript
+    exec plasmidverify.py "$@"
+
+%test
+    plasmidverify.py --help

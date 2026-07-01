@@ -4,7 +4,53 @@ From: ubuntu:22.04
 # ------------------------------------------------------------
 # TEMPLATE — copy to <ToolName>/<ToolName>.def and fill in
 # all <PLACEHOLDER> values before building.
-# Build: APPTAINER_BINDPATH="" apptainer build <ToolName>/<ToolName>.sif <ToolName>/<ToolName>.def
+#
+# Build (cache/tmp dirs MUST be off $HOME — see config.sh):
+#   module load apptainer
+#   export APPTAINER_BINDPATH=""
+#   export APPTAINER_CACHEDIR="/share/brc/$USER/.apptainer/cache"
+#   export APPTAINER_TMPDIR="/share/brc/$USER/.apptainer/tmp"
+#   apptainer build <ToolName>/<ToolName>.sif <ToolName>/<ToolName>.def
+#
+# Pick ONE install pattern below. Verified against real builds — see
+# CLAUDE.md "Lessons from empirical builds" for why these specific
+# patterns were chosen over the alternatives.
+#
+# Pattern 0 — Upstream ships its own container def (check the repo for
+#   Dockerfile / Singularity*.def / apptainer/*.def / singularity/*.def
+#   FIRST, before writing anything from scratch). Adapt it: keep its
+#   install logic, add our %labels/Maintainer and the Hazel bind-mount
+#   mkdir line. Do not re-derive install steps the upstream authors
+#   already solved.
+#
+# Pattern 1 — PyPI release, modern wheel available (From: ubuntu:22.04):
+#   apt-get install python3 python3-pip git ca-certificates
+#   pip3 install --no-cache-dir <Tool>==<Version>
+#
+# Pattern 2 — GitHub source with setup.py/pyproject.toml, no PyPI release
+#   (From: ubuntu:22.04):
+#   apt-get install python3 python3-pip build-essential git ca-certificates
+#   pip3 install --no-cache-dir git+<URL>@<tag>
+#
+# Pattern 3 — GitHub source, NO packaging file at all (no setup.py,
+#   pyproject.toml, or requirements.txt). Do NOT guess dependencies from
+#   the README — grep the actual `import`/`from` statements in the repo's
+#   .py files for the real dependency list (see create_def_file.sh, which
+#   does this automatically). Only add build-essential if a discovered
+#   dependency has no prebuilt wheel.
+#   apt-get install python3 python3-pip git ca-certificates [+ build-essential if needed]
+#   pip3 install --no-cache-dir <deps discovered from imports>
+#   git clone --depth 1 --branch <tag> <URL> /opt/<Tool>
+#   (wrapper script or PYTHONPATH export if the tool has no console-script entry point)
+#
+# Pattern 4 — Distributed via bioconda/conda-forge:
+#   From: condaforge/miniforge3:24.3.0-0   (NOT continuumio/miniconda3 —
+#     its classic solver can hang indefinitely on the combined
+#     bioconda+conda-forge index; miniforge3 ships mamba/libmamba and
+#     solves the same request in minutes)
+#   mamba create -n <tool> -y -c conda-forge -c bioconda <pkg>=<ver>
+#   mamba clean -afy
+#   Activate in %environment: prepend /opt/conda/envs/<tool>/bin to PATH
 # ------------------------------------------------------------
 
 %labels
@@ -35,22 +81,13 @@ From: ubuntu:22.04
         apt-get install -y --no-install-recommends \
             python3 \
             python3-pip \
-            build-essential \
-            git && \
+            git \
+            ca-certificates && \
         apt-get clean && \
         rm -rf /var/lib/apt/lists/*
 
-    # Install <TOOL> — uncomment one pattern:
-    #
-    # PyPI release (preferred for reproducibility):
-    #   pip3 install --no-cache-dir <TOOL>==<VERSION>
-    #
-    # GitHub source (use when no PyPI release exists):
-    #   pip3 install --no-cache-dir git+<UPSTREAM_URL>@<TAG_OR_COMMIT>
-    #
-    # Clone + local install (use when setup.py/pyproject.toml is present):
-    #   git clone --branch <TAG> --depth 1 <UPSTREAM_URL> /opt/<TOOL>
-    #   pip3 install --no-cache-dir /opt/<TOOL>
+    # Install <TOOL> — pick the one pattern above that matches this tool
+    # and delete the rest of these comments.
 
 %environment
     export DEBIAN_FRONTEND=noninteractive

@@ -1,0 +1,74 @@
+Bootstrap: docker
+From: ubuntu:22.04
+
+%labels
+    Maintainer sdweave2@ncsu.edu
+    Source https://github.com/KGerhardt/fastaaiv2
+    Version b69d935c45d0760d97acd651bf39c9de8a9f347b
+
+%help
+    FastAAI v2 — ultrafast estimator of whole-genome aggregate amino acid
+    identity (AAI) using shared single-copy proteins and amino acid
+    tetramer Jaccard similarity.
+
+    Usage:
+        apptainer run fastaaiv2.sif <module> [options]
+
+    Modules:
+        init      Initialize an empty FastAAI database with HMM models
+        preproc   Predict proteins and extract SCP data ("crystals")
+        consume   Add crystals to a FastAAI database
+        finalize  Finalize database records for querying
+        query     Query a finalized FastAAI database
+
+    Example:
+        apptainer run fastaaiv2.sif init --help
+
+%post
+    export DEBIAN_FRONTEND=noninteractive
+
+    # Hazel bind-mount points
+    mkdir -p /rs1 /share /home /usr/local/usrapps
+
+    # System packages
+    apt-get update -qq && \
+        apt-get install -y --no-install-recommends \
+            python3 \
+            python3-pip \
+            git \
+            ca-certificates && \
+        apt-get clean && \
+        rm -rf /var/lib/apt/lists/*
+
+    # Install FastAAI v2 — no setup.py/pyproject.toml/requirements.txt in the
+    # repo, so dependencies below were derived from the actual import
+    # statements in the source files, not the README.
+    pip3 install --no-cache-dir \
+        numpy \
+        pyhmmer \
+        pyrodigal
+
+    # No tagged releases exist upstream; pin to a specific commit for
+    # reproducibility.
+    git clone https://github.com/KGerhardt/fastaaiv2.git /opt/fastaaiv2 && \
+        cd /opt/fastaaiv2 && \
+        git checkout b69d935c45d0760d97acd651bf39c9de8a9f347b
+
+    # fastaai_main.py has no console-script entry point; wrap it so it's
+    # callable by name. Python automatically adds the script's own
+    # directory to sys.path, so the sibling-module imports inside
+    # fastaai_main.py resolve without extra PYTHONPATH configuration.
+    cat > /usr/local/bin/fastaai_main << 'EOF'
+#!/bin/bash
+exec python3 /opt/fastaaiv2/fastaai_main.py "$@"
+EOF
+    chmod +x /usr/local/bin/fastaai_main
+
+%environment
+    export DEBIAN_FRONTEND=noninteractive
+
+%runscript
+    exec fastaai_main "$@"
+
+%test
+    fastaai_main

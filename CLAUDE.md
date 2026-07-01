@@ -6,6 +6,22 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 This workspace is used by BRC admins to build [Apptainer](https://apptainer.org/) container images (`.sif` files) for tools deployed on the NC State Hazel HPC cluster. Built images are published to `/usr/local/usrapps/brc/brc_modules/images/` for use with the BRC module system.
 
+## History: this is a rebuild, not the original design
+
+An earlier version of this pipeline (deleted; see git history before this rewrite if needed) auto-generated `.def` files from a much larger, more speculative set of heuristics and had no build verification loop — most of its bioconda-based tools failed to build (`exit 255` in `container_build.log`), and it was rebuilt from scratch by actually running real `apptainer build`s against real tools (plasmidVerify, PlasClass, fastaaiv2, Phanta) until they passed, then generalizing only from what was empirically observed to work. The lessons below are load-bearing — they came from failures, not guesses.
+
+## Lessons from empirical builds
+
+1. **`APPTAINER_CACHEDIR`/`APPTAINER_TMPDIR` must never default to `$HOME`.** Home on Hazel has a 1GB quota. Apptainer's default cache lives at `$HOME/.apptainer`, so pulling any nontrivial Docker base image (`continuumio/miniconda3`, `tensorflow/tensorflow`, etc.) during a build silently fills the quota mid-pull and dies with a generic `exit 255` that looks like a broken `.def` but isn't. This was the root cause of most old build failures. `config.sh` and `apptainer_build.sh` now always point both at scratch — never build manually without doing the same (see "Manual Build" below).
+
+2. **Bioconda tools: use `condaforge/miniforge3` + `mamba`, never `continuumio/miniconda3` + classic `conda`.** Tested head-to-head on the exact same install (`plasclass=0.1.1` from bioconda): classic conda's solver stalled for 20+ minutes and never finished (CPU usage near zero — genuinely stuck, not just slow) resolving against the combined bioconda+conda-forge index. Mamba solved, downloaded, installed, and passed `%test` for the same package in under 5 minutes. This holds even for heavy environments — a 303-package Snakemake/Kraken2/R stack (Phanta) resolved and built successfully with mamba.
+
+3. **For GitHub-source repos with no `setup.py`/`pyproject.toml`/`requirements.txt`, never guess dependencies from the README.** `fastaaiv2` is a flat collection of scripts with zero packaging metadata; its README doesn't list Python dependencies at all. The only ground truth is the actual `import`/`from` statements in the source. `create_def_file.sh` handles this automatically: when no PyPI release, no bioconda package, and no packaging file are found, it downloads the repo's `.py` files and parses their imports with Python's `ast` module, filtering out stdlib and local-module names, and hands Claude that exact list as the authoritative dependency set.
+
+4. **Check the upstream repo for a shipped container definition before writing one from scratch.** `jaeger`'s `.def` was copied directly from `Yasas1994/Jaeger`'s own `singularity/jaeger_singularity.def` — it's the one tool in this repo's history that never needed debugging. `create_def_file.sh` now checks the repo tree for a `Dockerfile` or `*.def` first and tells Claude to adapt it (keep the install logic, only add our Maintainer label / Hazel bind-mount line) rather than re-deriving install steps that upstream already solved.
+
+5. **A `.def` that "looks right" is not verified until it actually builds.** Several old `.def`s were structurally reasonable but failed purely due to the environment issues above (lesson 1), not content bugs. Never trust a generated `.def` without running an actual `apptainer build` against it — this is why `apptainer_build.sh` pauses for review after auto-generating a `.def`, and why it should be the last step, not skipped.
+
 ## Adding a New Tool (Typical Workflow)
 
 Builds and deployments must run from a **login node** — Apptainer needs internet access during `%post`.
@@ -18,7 +34,8 @@ Builds and deployments must run from a **login node** — Apptainer needs intern
 2. Run `./apptainer_build.sh` from this directory.
 
 `apptainer_build.sh` handles all steps automatically:
-- If `tools/<ToolName>/<ToolName>.def` is missing, calls `create_def_file.sh <ToolName>` to generate it via Claude (fetches PyPI/GitHub info first).
+- Sets `APPTAINER_CACHEDIR`/`APPTAINER_TMPDIR` to scratch (see lesson 1 above) before doing anything else.
+- If `tools/<ToolName>/<ToolName>.def` is missing, calls `create_def_file.sh <ToolName>` to generate it via Claude (gathers real evidence first — see "How `.def` generation works" below), then pauses for you to review the generated file before continuing.
 - Extracts `Version` from the `.def` labels and names the output `tools/<ToolName>/<ToolName>-<Version>.sif`.
 - Appends the full build command trace to `container_build.log`.
 - If `DEPLOY=true` and the container-mod repos metadata file is missing, calls `create_repos_entry.sh` to generate it by parsing the `.def` directly.
@@ -26,49 +43,65 @@ Builds and deployments must run from a **login node** — Apptainer needs intern
 
 **If the auto-generated `.def` needs manual fixes**, edit `tools/<ToolName>/<ToolName>.def` before re-running `apptainer_build.sh`. The script will not overwrite an existing `.def`.
 
+## How `.def` generation works
+
+`create_def_file.sh <ToolName> [--github-url <URL>]` gathers evidence, in this order, before ever calling Claude:
+
+1. **PyPI lookup** — checks `pypi.org/pypi/<tool>/json` for a release.
+2. **GitHub resolution** — from PyPI metadata, or a ranked GitHub search fallback if not on PyPI.
+3. **Repo tree fetch** — `git/trees/<default_branch>?recursive=1`, used for everything below.
+4. **Upstream container def check** (Pattern 0) — searches the tree for `*.def` or `Dockerfile`.
+5. **Bioconda check** (Pattern 4) — `api.anaconda.org/package/bioconda/<tool>`, independent of PyPI, since many bioinformatics tools are bioconda-preferred even with a PyPI release.
+6. **Packaging file check** — `setup.py`/`pyproject.toml`/`requirements.txt`/`setup.cfg` anywhere in the tree.
+7. **Import-based dependency discovery** (Pattern 3) — only runs if 1, 5, and 6 all came up empty: downloads the repo's `.py` files and parses real imports via `ast`, filtering stdlib and local names.
+8. **README fetch** — supplementary context, not authoritative when 4/5/7 found something.
+9. **Bioinformatics relevance check** — aborts if the tool is clearly unrelated to life sciences (fails open if Claude is unreachable).
+
+Everything found in steps 4/5/7 is passed to Claude marked `AUTHORITATIVE`, with explicit instructions to prefer it over README-derived guesses. See `template.def` for the full 5-pattern decision tree (0: adapt upstream def, 1: PyPI, 2: GitHub source with packaging, 3: GitHub source without packaging — use discovered imports, 4: bioconda via miniforge3+mamba).
+
+The script only writes the `.def` — it does not build. Review the output before running `apptainer_build.sh`.
+
 ## Manual Build (Without the Wrapper)
 
 ```bash
 module load apptainer
-APPTAINER_BINDPATH="" apptainer build tools/<ToolName>/<ToolName>-<Version>.sif tools/<ToolName>/<ToolName>.def
+export APPTAINER_BINDPATH=""
+export APPTAINER_CACHEDIR="/share/brc/$USER/.apptainer/cache"   # never $HOME — see lesson 1
+export APPTAINER_TMPDIR="/share/brc/$USER/.apptainer/tmp"
+mkdir -p "$APPTAINER_CACHEDIR" "$APPTAINER_TMPDIR"
+apptainer build tools/<ToolName>/<ToolName>-<Version>.sif tools/<ToolName>/<ToolName>.def
 ```
 
 `APPTAINER_BINDPATH=""` is required — Hazel's Apptainer config sets a bind path that breaks builds.
 
 ## `.def` File Conventions
 
-Start from `template.def`. All sections are required unless noted.
+Start from `template.def` — it documents all 5 install patterns with the decision rules above inline as comments. All sections are required unless noted.
 
 - **`%labels`**: `Maintainer sdweave2@ncsu.edu`, `Source <upstream URL>`, `Version <version>` — the version here drives the output `.sif` filename.
 - **`%help`**: Document usage and all flags; surfaced via `apptainer run-help <image>.sif`.
-- **`%post`**:
-  - Always include `mkdir -p /rs1 /share /home /usr/local/usrapps` for Hazel bind-mount points.
-  - Standard apt-get pattern: `apt-get update -qq && apt-get install -y --no-install-recommends ... && apt-get clean && rm -rf /var/lib/apt/lists/*`
-  - Three install patterns (pick one):
-    - PyPI release (preferred): `pip3 install --no-cache-dir <Tool>==<Version>`
-    - GitHub source: `pip3 install --no-cache-dir git+<URL>@<tag>`
-    - Clone + local install: `git clone --branch <tag> --depth 1 <URL> /opt/<Tool> && pip3 install --no-cache-dir /opt/<Tool>`
-  - Pin versions explicitly when tool compatibility is fragile (see the Theano/Keras pins in `DeepVirFinder.def`).
+- **`%post`**: Always include `mkdir -p /rs1 /share /home /usr/local/usrapps` for Hazel bind-mount points.
 - **`%runscript`**: `exec <command> "$@"` — the `exec` ensures signals propagate correctly.
-- **`%test`**: Minimal sanity check; `apptainer test` runs this during the build.
+- **`%test`**: A real invocation that exits 0. Prefer `<command> --help`; if the tool has no top-level `--help` (e.g. `fastaaiv2`'s `fastaai_main` prints usage and exits on a bare call), use a bare invocation instead of guessing a flag that doesn't exist.
 
 ## Helper Scripts
 
 | Script | Purpose |
 |--------|---------|
-| `create_def_file.sh <ToolName>` | Generates `tools/<ToolName>/<ToolName>.def` by querying PyPI/GitHub then prompting Claude. |
-| `create_repos_entry.sh <def_file> <output_path>` | Generates the container-mod metadata file (Description, Home Page, Programs) by parsing the `.def` directly — no Claude required. |
+| `create_def_file.sh <ToolName>` | Generates `tools/<ToolName>/<ToolName>.def` — see "How `.def` generation works" above. |
+| `create_repos_entry.sh <def_file> <output_path>` | Generates the container-mod metadata file (Description, Home Page, Programs) by parsing the `.def` directly — no Claude required, was never implicated in the old failures. |
 
-Both scripts require the `claude` CLI (`/home/sdweave2/.local/bin/claude`) and outbound internet access (login node only).
+Both scripts require the `claude` CLI (`/home/sdweave2/.local/bin/claude`, or on `PATH`) and outbound internet access (login node only).
 
 ## Repo Layout
 
 ```
 custom_container_module/
 ├── apptainer_build.sh        # main build/deploy wrapper
-├── create_def_file.sh        # auto-generates .def via Claude + PyPI/GitHub
+├── config.sh                 # site-specific paths, cache/tmp dirs (edit before use)
+├── create_def_file.sh        # auto-generates .def via Claude + PyPI/GitHub/bioconda/import evidence
 ├── create_repos_entry.sh     # auto-generates container-mod metadata by parsing the .def
-├── template.def              # canonical .def template
+├── template.def              # canonical .def template with the 5 install patterns
 ├── container_build.log       # timestamped build+deploy audit trail
 ├── tools/
 │   └── <ToolName>/

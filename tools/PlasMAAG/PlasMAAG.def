@@ -1,0 +1,86 @@
+Bootstrap: docker
+From: continuumio/miniconda3:latest
+
+%labels
+    Maintainer sdweave2@ncsu.edu
+    Source https://github.com/RasmussenLab/vamb/tree/vamb_n2v_asy/workflow_PlasMAAG
+    Version 0.0.1
+
+%help
+    PlasMAAG — framework for recovering plasmids and organisms from metagenomic
+    samples using assembly-alignment graphs and a contrastive variational
+    autoencoder (VAMB).
+
+    Usage:
+        apptainer run PlasMAAG.sif [options]
+
+    Options:
+        --reads <file>                   Whitespace-separated file with read1/read2 columns
+        --reads_and_assembly_dir <file>  TSV with assembly_dir column pointing to SPAdes output directories
+        --output <directory>             Output directory
+        --genomad_db <path>              Path to a pre-downloaded geNomad database
+        --dryrun                         Execute a dry run without running any steps
+        --snakemake_arguments <args>     Additional arguments forwarded to Snakemake
+
+    Example:
+        apptainer run PlasMAAG.sif --reads reads.txt --output results/
+
+%post
+    export DEBIAN_FRONTEND=noninteractive
+
+    # Hazel bind-mount points
+    mkdir -p /rs1 /share /home /usr/local/usrapps
+
+    # git is needed to clone the repository during build
+    apt-get update -qq && \
+        apt-get install -y --no-install-recommends git && \
+        apt-get clean && \
+        rm -rf /var/lib/apt/lists/*
+
+    # Clone the vamb repo at the PlasMAAG branch; the workflow subpackage and
+    # the parent vamb library are both installed from this checkout below.
+    git clone --branch vamb_n2v_asy --depth 1 \
+        https://github.com/RasmussenLab/vamb.git /opt/vamb
+
+    # Create the PlasMAAG conda environment.
+    # Channel priority mirrors envs/PlasMAAG.yaml: pytorch > conda-forge > bioconda > defaults.
+    # c-compiler and cxx-compiler are needed to build vamb (Cython extensions) from source.
+    conda create -n PlasMAAG -y \
+        -c pytorch -c conda-forge -c bioconda -c defaults \
+        python=3.10 \
+        c-compiler \
+        cxx-compiler \
+        snakemake \
+        minimap2 \
+        samtools \
+        spades \
+        blast \
+        networkx \
+        pysam \
+        biopython \
+        pytorch \
+        pip
+
+    # Install pinned pip-only dependencies
+    /opt/conda/envs/PlasMAAG/bin/pip install --no-cache-dir \
+        pandas==2.2.3 \
+        rich-click==1.8.3 \
+        loguru==0.7.3
+
+    # Install the parent vamb library, then the PlasMAAG CLI entry point.
+    # This replicates the "-e ../.. && -e .." editable installs from the yaml,
+    # but as regular installs suitable for a container.
+    /opt/conda/envs/PlasMAAG/bin/pip install --no-cache-dir /opt/vamb
+    /opt/conda/envs/PlasMAAG/bin/pip install --no-cache-dir /opt/vamb/workflow_PlasMAAG
+
+    conda clean -afy
+
+%environment
+    export DEBIAN_FRONTEND=noninteractive
+    export PATH=/opt/conda/envs/PlasMAAG/bin:$PATH
+
+%runscript
+    exec PlasMAAG "$@"
+
+%test
+    PlasMAAG --help
