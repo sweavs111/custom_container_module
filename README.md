@@ -84,15 +84,27 @@ custom_container_module/
 ├── create_def_file.sh        # auto-generates .def via Claude + upstream-def/bioconda/import evidence
 ├── create_repos_entry.sh     # auto-generates container-mod metadata by parsing the .def
 ├── template.def              # canonical .def template — documents 5 install patterns
-├── tools/
-│   └── <ToolName>/
-│       └── <ToolName>.def    # Apptainer definition (source of truth)
-└── test_container/           # minimal working example
-    ├── test.def
-    └── scripts/              # files injected into image via %files
+├── tests/
+│   ├── run_tests.sh          # regression suite for the pipeline scripts themselves
+│   └── fixtures/
+│       └── smoketest.def     # tiny fixture used only by run_tests.sh
+└── tools/
+    └── <ToolName>/
+        └── <ToolName>.def    # Apptainer definition (source of truth)
 ```
 
 `.sif` binaries and `container_build.log` are excluded from version control.
+
+## Testing
+
+`tests/run_tests.sh` is a regression suite for the pipeline scripts themselves (`config.sh`, `apptainer_build.sh`, `create_def_file.sh`, `create_repos_entry.sh`) — run it after changing any of them, before trusting the change against a real tool build:
+
+```bash
+./tests/run_tests.sh            # unit tests + a real smoke build via apptainer_build.sh
+./tests/run_tests.sh --no-build # unit tests only — no apptainer, no network
+```
+
+The unit tests are pure bash/text-parsing checks. The smoke build actually invokes `apptainer_build.sh` against `tests/fixtures/smoketest.def` (a tiny debian-slim image, `DEPLOY=false`) in an isolated temp directory, so it needs `module load apptainer` and outbound internet (login node only) but never touches `container-mod`, this repo's `tools/`, or `container_build.log`.
 
 ## `.def` File Conventions
 

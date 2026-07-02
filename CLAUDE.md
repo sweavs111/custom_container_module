@@ -18,7 +18,7 @@ An earlier version of this pipeline (deleted; see git history before this rewrit
 
 3. **For GitHub-source repos with no `setup.py`/`pyproject.toml`/`requirements.txt`, never guess dependencies from the README.** `fastaaiv2` is a flat collection of scripts with zero packaging metadata; its README doesn't list Python dependencies at all. The only ground truth is the actual `import`/`from` statements in the source. `create_def_file.sh` handles this automatically: when no PyPI release, no bioconda package, and no packaging file are found, it downloads the repo's `.py` files and parses their imports with Python's `ast` module, filtering out stdlib and local-module names, and hands Claude that exact list as the authoritative dependency set.
 
-4. **Check the upstream repo for a shipped container definition before writing one from scratch.** `jaeger`'s `.def` was copied directly from `Yasas1994/Jaeger`'s own `singularity/jaeger_singularity.def` — it's the one tool in this repo's history that never needed debugging. `create_def_file.sh` now checks the repo tree for a `Dockerfile` or `*.def` first and tells Claude to adapt it (keep the install logic, only add our Maintainer label / Hazel bind-mount line) rather than re-deriving install steps that upstream already solved.
+4. **Check the upstream repo for a shipped container definition before writing one from scratch.** `jaeger`'s `.def` was copied directly from `Yasas1994/Jaeger`'s own `singularity/jaeger_singularity.def` — it's the one tool in this repo's history that never needed debugging. `create_def_file.sh` now checks the repo tree for a `Dockerfile` or `*.def` first and tells Claude to adapt it (keep the install logic, only add our Maintainer label / Hazel bind-mount line) rather than re-deriving install steps that upstream already solved. (`tools/jaeger/` still carries `create_container.sh`/`make_module.sh` — manual build/deploy scripts from before `apptainer_build.sh` existed as a generic wrapper. They predate the current workflow and aren't a pattern to follow for new tools; use `apptainer_build.sh` instead.)
 
 5. **A `.def` that "looks right" is not verified until it actually builds.** Several old `.def`s were structurally reasonable but failed purely due to the environment issues above (lesson 1), not content bugs. Never trust a generated `.def` without running an actual `apptainer build` against it — this is why `apptainer_build.sh` pauses for review after auto-generating a `.def`, and why it should be the last step, not skipped.
 
@@ -107,12 +107,24 @@ custom_container_module/
 ├── create_def_file.sh        # auto-generates .def via Claude + upstream-def/bioconda/import evidence
 ├── create_repos_entry.sh     # auto-generates container-mod metadata by parsing the .def
 ├── template.def              # canonical .def template with the 5 install patterns
-├── container_build.log       # timestamped build+deploy audit trail
-├── tools/
-│   └── <ToolName>/
-│       ├── <ToolName>.def        # Apptainer definition (source of truth)
-│       └── <ToolName>-<Version>.sif  # built image (not committed to git)
-└── test_container/           # minimal working example
-    ├── test.def
-    └── scripts/              # files injected into image via %files
+├── container_build.log       # timestamped build+deploy audit trail (gitignored)
+├── tests/
+│   ├── run_tests.sh          # regression suite for the pipeline scripts themselves
+│   └── fixtures/
+│       └── smoketest.def     # tiny fixture used only by run_tests.sh
+└── tools/
+    └── <ToolName>/
+        ├── <ToolName>.def        # Apptainer definition (source of truth)
+        └── <ToolName>-<Version>.sif  # built image (not committed to git)
 ```
+
+## Testing Changes to the Pipeline Itself
+
+`tests/run_tests.sh` regression-tests `config.sh`, `apptainer_build.sh`, `create_def_file.sh`, and `create_repos_entry.sh` — run it after editing any of them:
+
+```bash
+./tests/run_tests.sh            # unit tests + a real smoke build via apptainer_build.sh
+./tests/run_tests.sh --no-build # unit tests only — no apptainer, no network
+```
+
+The smoke build runs a real `apptainer build` against `tests/fixtures/smoketest.def` (debian-slim, `DEPLOY=false`) in an isolated temp directory — needs `module load apptainer` + internet (login node only), but never touches `container-mod`, this repo's `tools/`, or `container_build.log`. This is separate from validating a new tool's `.def` (lesson 5 above) — it verifies the wrapper script logic itself, not any one tool's install steps.

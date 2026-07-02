@@ -1,0 +1,34 @@
+Bootstrap: docker
+From: debian:12-slim
+
+# Fixture used only by tests/run_tests.sh to smoke-test apptainer_build.sh's
+# build/log/deploy-skip path against a real `apptainer build`. Not a real
+# tool, not deployed, and never touched by create_def_file.sh — the test
+# harness copies this file straight to <tmp>/tools/smoketest/smoketest.def
+# so the "generate .def" branch is skipped entirely. Kept tiny (debian-slim,
+# no packages) so the smoke test runs in seconds.
+#
+# Must be glibc-based, not musl (e.g. NOT alpine): this user has no
+# /etc/subuid entry, so apptainer build always falls back to fakeroot mode
+# to run %post as root. Apptainer's injected fakeroot helper binaries
+# (/.singularity.d/libs/faked) are glibc binaries and fail with a
+# "not found" exec error inside a musl-based image like Alpine. Every real
+# tool .def in this repo already uses a glibc base (ubuntu/miniconda/etc)
+# for this reason.
+
+%labels
+    Maintainer sdweave2@ncsu.edu
+    Source https://github.com/brc-smoketest/smoketest
+    Version 0.0.1
+
+%help
+    smoketest — fixture container for tests/run_tests.sh, not a real tool
+
+%post
+    mkdir -p /rs1 /share /home /usr/local/usrapps
+
+%runscript
+    exec echo "smoketest ok" "$@"
+
+%test
+    echo "smoketest ok"

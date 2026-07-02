@@ -17,6 +17,22 @@ export APPTAINER_CACHEDIR="$APPTAINER_CACHEDIR"
 export APPTAINER_TMPDIR="$APPTAINER_TMPDIR"
 mkdir -p "$APPTAINER_CACHEDIR" "$APPTAINER_TMPDIR"
 
+# Runs "$@", appending a timestamp plus a full xtrace of the command to
+# container_build.log, and returns its exit code.
+run_logged() {
+    echo "$(date +"%Y-%m-%d %H:%M:%S")" >> container_build.log
+    exec 3>> container_build.log
+    BASH_XTRACEFD=3
+    set -x
+    "$@"
+    local rc=$?
+    { set +x; } 2>/dev/null
+    exec 3>&-
+    unset BASH_XTRACEFD
+    echo >> container_build.log
+    return $rc
+}
+
 ### --- Edit before each build (in config.sh) ---
 # GITHUB_URL and DEPLOY are set at the top of config.sh, not here.
 if [[ -z "${GITHUB_URL:-}" ]]; then
@@ -47,6 +63,7 @@ if [[ -z "$VERSION" ]]; then
     exit 1
 fi
 SIF="tools/${TOOL}/${TOOL}-${VERSION}"
+SIF_FILE="${SIF}.sif"
 
 ### --- Pre-flight: generate container-mod metadata if missing ---
 if [[ "$DEPLOY" == true && ! -f "$REPOS_FILE" ]]; then
@@ -55,18 +72,10 @@ fi
 
 ### --- Update log file ---
 touch container_build.log
-echo "$(date +"%Y-%m-%d %H:%M:%S")" >> container_build.log
 
 ### --- Build ---
-exec 3>> container_build.log
-BASH_XTRACEFD=3
-set -x
-apptainer build "$SIF.sif" "$DEF"
+run_logged apptainer build "$SIF_FILE" "$DEF"
 BUILD_EXIT=$?
-{ set +x; } 2>/dev/null
-exec 3>&-
-unset BASH_XTRACEFD
-echo >> container_build.log
 
 if [[ $BUILD_EXIT -ne 0 ]]; then
     echo "ERROR: apptainer build failed (exit $BUILD_EXIT) — skipping container-mod" | tee -a container_build.log
@@ -76,27 +85,26 @@ fi
 ### --- Deploy module ---
 if [[ "$DEPLOY" == true ]]; then
     source "$(dirname "$CONTAINER_MOD")/profiles/$CONTAINER_MOD_PROFILE"
-    SIF_DEST="${PUBLIC_IMAGEDIR}/$(basename "${SIF}.sif")"
+    SIF_DEST="${PUBLIC_IMAGEDIR}/$(basename "$SIF_FILE")"
 
-    echo "$(date +"%Y-%m-%d %H:%M:%S")" >> container_build.log
-    exec 3>> container_build.log
-    BASH_XTRACEFD=3
-    set -x
-    cp "${SIF}.sif" "$SIF_DEST"
-    printf '%s\n%s\n' "$TOOL_LOWER" "$VERSION" | "$CONTAINER_MOD" pipe -t --profile "$CONTAINER_MOD_PROFILE" --update "$SIF_DEST"
-    DEPLOY_EXIT=${PIPESTATUS[1]}
-    { set +x; } 2>/dev/null
-    exec 3>&-
-    unset BASH_XTRACEFD
-    echo >> container_build.log
+    # cp and container-mod are chained with && so a failed cp short-circuits
+    # (and is reflected in $?) instead of silently registering a module for
+    # a .sif that was never copied.
+    do_deploy() {
+        cp "$SIF_FILE" "$SIF_DEST" && \
+            "$CONTAINER_MOD" pipe -t --profile "$CONTAINER_MOD_PROFILE" --update "$SIF_DEST" \
+                < <(printf '%s\n%s\n' "$TOOL_LOWER" "$VERSION")
+    }
+    run_logged do_deploy
+    DEPLOY_EXIT=$?
 
     if [[ $DEPLOY_EXIT -ne 0 ]]; then
-        echo "ERROR: container-mod failed (exit $DEPLOY_EXIT) — local .sif kept at ${SIF}.sif" | tee -a container_build.log
+        echo "ERROR: container-mod failed (exit $DEPLOY_EXIT) — local .sif kept at $SIF_FILE" | tee -a container_build.log
         exit $DEPLOY_EXIT
     fi
 
-    rm "${SIF}.sif"
-    echo "Removed local copy: ${SIF}.sif"
+    rm "$SIF_FILE"
+    echo "Removed local copy: $SIF_FILE"
 fi
 
 ### --- Exit ---
