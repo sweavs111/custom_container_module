@@ -37,6 +37,14 @@ CONTAINER_MOD_PROFILE="brc"
 # Fallback path to the claude CLI (used if 'claude' is not on PATH)
 CLAUDE_BIN="/home/sdweave2/.local/bin/claude"
 
+# Model used for .def generation, pinned rather than left on the CLI's
+# floating default — this pipeline's whole design is about reproducibility
+# (pinned bioconda/PyPI versions, no invented facts), and an unpinned model
+# reintroduces exactly the kind of silent drift that undermines that: the
+# CLI's default can change on Anthropic's schedule and produce a
+# structurally different .def for the same repo with no visible cause.
+CLAUDE_MODEL="claude-sonnet-5"
+
 # Apptainer cache/tmp dirs — MUST point at scratch, never $HOME.
 # Home on Hazel has a 1GB quota; pulling Docker base images (miniconda3,
 # tensorflow, etc.) into the default $HOME/.apptainer cache silently fills

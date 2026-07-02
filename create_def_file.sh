@@ -347,7 +347,7 @@ fi
 # --- Generate def file with Claude ---
 echo "Generating .def file with Claude..."
 
-"$CLAUDE" -p "Generate a complete Apptainer .def file for the tool '$TOOL'.
+"$CLAUDE" --model "$CLAUDE_MODEL" -p "Generate a complete Apptainer .def file for the tool '$TOOL'.
 
 Use the template below as a structural guide — it documents 5 install
 patterns (0-4) with explicit decision rules refined from real builds.
