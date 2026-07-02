@@ -13,9 +13,9 @@ Scripts for building and deploying [Apptainer](https://apptainer.org/) container
 Before first use, edit `config.sh` to match your environment:
 
 ```bash
-# --- Edit before each build ---
-GITHUB_URL=""  # e.g. "https://github.com/Shamir-Lab/PlasClass"
-DEPLOY=true    # false to skip module registration
+# --- Edit before a single manual build ---
+SINGLE_GITHUB_URL=""  # e.g. "https://github.com/Shamir-Lab/PlasClass"
+DEPLOY=true            # false to skip module registration
 
 # Path to the container-mod executable
 CONTAINER_MOD="/path/to/container-mod"
@@ -42,7 +42,7 @@ Apptainer's default image cache lives at `$HOME/.apptainer`. Home on Hazel has a
 
 1. Edit the two variables at the top of `config.sh`:
    ```bash
-   GITHUB_URL="https://github.com/Shamir-Lab/PlasClass"
+   SINGLE_GITHUB_URL="https://github.com/Shamir-Lab/PlasClass"
    DEPLOY=true   # false to skip module registration
    ```
    The GitHub URL is the sole identifier — the tool/module name (`tools/<ToolName>/`, `.sif` filename, container-mod registration name) is always derived from it automatically, never typed separately. This removes the ambiguity of matching a plain tool name to the right repo when several same-named projects exist.

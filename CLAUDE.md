@@ -36,7 +36,7 @@ and is never typed separately, so it can't drift from the URL it came from.
 
 1. Edit the two variables at the top of `config.sh`:
    ```bash
-   GITHUB_URL="https://github.com/Shamir-Lab/PlasClass"
+   SINGLE_GITHUB_URL="https://github.com/Shamir-Lab/PlasClass"
    DEPLOY=true   # false to skip module registration
    ```
 2. Run `./apptainer_build.sh` from this directory.
@@ -50,6 +50,18 @@ and is never typed separately, so it can't drift from the URL it came from.
 - Copies the SIF to `/usr/local/usrapps/brc/brc_modules/images/` and runs `container-mod pipe` to register the module, then removes the local `.sif`.
 
 **If the auto-generated `.def` needs manual fixes**, edit `tools/<ToolName>/<ToolName>.def` before re-running `apptainer_build.sh`. The script will not overwrite an existing `.def`.
+
+## Batch Builds
+
+To run the pipeline for a list of GitHub URLs instead of editing `config.sh` and re-running `apptainer_build.sh` by hand for each one, use `batch_build.sh`:
+
+```bash
+./batch_build.sh urls.txt   # one GitHub URL per line; '#' comments and blank lines skipped
+```
+
+This loops `GITHUB_URL=<url> DEPLOY=true ./apptainer_build.sh` over the list — one pass per URL (generate `.def` if missing → pause for review → build → deploy), same as the manual workflow, just without re-editing `config.sh` each time. The review pause in `apptainer_build.sh` (lesson 5) still fires per URL whenever a new `.def` is generated, so a batch run is not fully unattended the first time through a given tool list — you still review each generated `.def` before its build proceeds. A tool whose `.def` already exists builds straight through with no prompt. A failed build/deploy for one URL doesn't stop the rest; failures are collected and reported in a summary at the end.
+
+`config.sh` derives `GITHUB_URL="${GITHUB_URL:-$SINGLE_GITHUB_URL}"` — an environment `GITHUB_URL`, if set, always wins over `SINGLE_GITHUB_URL`. `batch_build.sh` sets `GITHUB_URL` per iteration via the environment, so it always takes priority automatically. This means switching between single and batch runs never requires touching or reverting anything in `config.sh` beyond `SINGLE_GITHUB_URL` itself — there's no default-variable syntax to remember or restore.
 
 ## How `.def` generation works
 
@@ -95,6 +107,7 @@ Start from `template.def` — it documents all 5 install patterns with the decis
 |--------|---------|
 | `create_def_file.sh <GitHubURL>` | Generates `tools/<ToolName>/<ToolName>.def` for the given repo (tool name derived from the URL) — see "How `.def` generation works" above. |
 | `create_repos_entry.sh <def_file> <output_path>` | Generates the container-mod metadata file (Description, Home Page, Programs) by parsing the `.def` directly — no Claude required, was never implicated in the old failures. |
+| `batch_build.sh <urls_file>` | Runs `apptainer_build.sh` once per GitHub URL in a list — see "Batch Builds" above. |
 
 Both scripts require the `claude` CLI (`/home/sdweave2/.local/bin/claude`, or on `PATH`) and outbound internet access (login node only).
 
@@ -103,6 +116,7 @@ Both scripts require the `claude` CLI (`/home/sdweave2/.local/bin/claude`, or on
 ```
 custom_container_module/
 ├── apptainer_build.sh        # main build/deploy wrapper
+├── batch_build.sh            # loops apptainer_build.sh over a file of GitHub URLs
 ├── config.sh                 # site-specific paths, cache/tmp dirs (edit before use)
 ├── create_def_file.sh        # auto-generates .def via Claude + upstream-def/bioconda/import evidence
 ├── create_repos_entry.sh     # auto-generates container-mod metadata by parsing the .def
