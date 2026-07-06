@@ -3,3 +3,6 @@
 
 # Build audit log
 container_build.log
+
+# Requested images list
+mery_container_request_6.18.26.txt
