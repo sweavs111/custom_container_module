@@ -2,7 +2,7 @@
 
 # Edit for a single manual build. Leave alone for batch runs (batch_build.sh sets GITHUB_URL per iteration).
 # e.g. SINGLE_GITHUB_URL="https://github.com/Shamir-Lab/PlasClass"
-SINGLE_GITHUB_URL="${SINGLE_GITHUB_URL:-}"
+SINGLE_GITHUB_URL="https://github.com/ChengPENG-wolf/ViraLM"
 DEPLOY="${DEPLOY:-true}"   # false to skip container-mod module generation
 
 # Do not edit directly — edit SINGLE_GITHUB_URL above instead.

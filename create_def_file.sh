@@ -371,7 +371,22 @@ Hard requirements (always apply):
 - Pin the version explicitly in the install command for reproducibility —
   use only a version number given to you above or found verbatim in the
   README/repo tree; never invent or guess one
-- %runscript must be: exec <command> \"\$@\"
+- %runscript must be: exec <command> \"\$@\" — <command> MUST be a single
+  bare executable name with no spaces, no paths, and no interpreter
+  prefix (e.g. 'viralm', NOT 'python3 /opt/ViraLM/viralm.py'). It must be
+  resolvable via 'command -v <command>' inside the built container.
+  container-mod's Programs field and its generated exec wrappers both
+  require exactly this — a multi-word runscript silently breaks the
+  deployed module even though the container itself still runs fine.
+  If the tool has no console-script entry point (Pattern 3, a flat
+  script with no packaging), do NOT fall back to a raw interpreter
+  invocation or a PYTHONPATH-only export — create a wrapper in %post:
+    cat > /usr/local/bin/<command> << 'EOF'
+    #!/bin/bash
+    exec python3 /opt/<Tool>/<script>.py \"\$@\"
+    EOF
+    chmod +x /usr/local/bin/<command>
+  then point %runscript/%test at that bare <command> name.
 - %test must be a real invocation that exits 0 (prefer '<command> --help';
   if the tool has no top-level --help flag, use a bare invocation that
   prints usage and exits cleanly instead of guessing a flag that doesn't exist)

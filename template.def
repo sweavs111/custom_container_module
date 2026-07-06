@@ -44,7 +44,20 @@ From: ubuntu:22.04
 #   apt-get install python3 python3-pip git ca-certificates [+ build-essential if needed]
 #   pip3 install --no-cache-dir <deps discovered from imports>
 #   git clone --depth 1 --branch <tag> <URL> /opt/<Tool>
-#   (wrapper script or PYTHONPATH export if the tool has no console-script entry point)
+#   If the tool has no console-script entry point, %runscript's <command>
+#   MUST still be a single bare name with no spaces or paths (see the
+#   %runscript rule below) — a raw `python3 /opt/<Tool>/<script>.py`
+#   invocation is NOT valid here, it breaks container-mod's Programs
+#   parsing and its generated exec wrappers (both expect one in-container
+#   executable name resolvable via `command -v`). Create a wrapper in
+#   %post instead:
+#     cat > /usr/local/bin/<tool> << 'EOF'
+#     #!/bin/bash
+#     exec python3 /opt/<Tool>/<script>.py "$@"
+#     EOF
+#     chmod +x /usr/local/bin/<tool>
+#   then %runscript/%test invoke the bare `<tool>` name. (See
+#   tools/fastaaiv2/fastaaiv2.def for a real example of this pattern.)
 #
 # Pattern 4 — Distributed via bioconda/conda-forge:
 #   From: condaforge/miniforge3:24.3.0-0   (NOT continuumio/miniconda3 —
@@ -97,6 +110,10 @@ From: ubuntu:22.04
     # Add PATH or other runtime vars here if needed
 
 %runscript
+    # <command> must be a single bare executable name (no spaces, no
+    # paths, no interpreter prefix) resolvable via `command -v` inside
+    # the built container — see the Pattern 3 note above if the tool has
+    # no console-script entry point.
     exec <command> "$@"
 
 %test
