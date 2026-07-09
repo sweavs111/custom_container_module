@@ -31,6 +31,10 @@ CLAUDE_BIN="/home/sdweave2/.local/bin/claude"
 # Model for .def generation — pinned for reproducibility, not left on the CLI's floating default.
 CLAUDE_MODEL="claude-sonnet-5"
 
+# Total apptainer_build.sh build attempts per tool, including the first —
+# i.e. this many minus one automatic Claude retry-fixes on build failure.
+DEF_FIX_MAX_ATTEMPTS=3
+
 # Apptainer cache/tmp dirs — MUST point at scratch, never $HOME (1GB quota, silently fills mid-build).
 APPTAINER_CACHEDIR="/share/brc/$USER/.apptainer/cache"
 APPTAINER_TMPDIR="/share/brc/$USER/.apptainer/tmp"

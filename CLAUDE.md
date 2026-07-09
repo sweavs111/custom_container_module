@@ -22,6 +22,14 @@ An earlier version of this pipeline (deleted; see git history before this rewrit
 
 5. **A `.def` that "looks right" is not verified until it actually builds.** Several old `.def`s were structurally reasonable but failed purely due to the environment issues above (lesson 1), not content bugs. Never trust a generated `.def` without running an actual `apptainer build` against it — this is why `apptainer_build.sh` pauses for review after auto-generating a `.def`, and why it should be the last step, not skipped.
 
+6. **`%post` must start with `set -e` — Apptainer does not fail the build when a `%post` command fails.** `VirSorter`'s `.def` (adapted from upstream's own Dockerfile under lesson 4) bootstrapped its own conda via a decade-old `Miniconda-latest` installer whose bundled OpenSSL can no longer complete a TLS handshake with anaconda.org. The `conda install -c bioconda mcl muscle blast hmmer diamond perl-bioperl ...` line failed with `SSL: CERTIFICATE_VERIFY_FAILED` on every single build attempt — but because `%post` had no `set -e`, the script just continued past it, and `apptainer build` reported success with a `.sif` missing its entire bioconda toolchain. The bug went undetected for several debug cycles because later, unrelated symptoms (missing Perl modules) looked like the root cause. `template.def`'s `%post` now opens with `set -e` (add `set -o pipefail` too if any install line pipes through another command) so a failed install step fails the whole build immediately and visibly.
+
+7. **Pattern 0 ("adapt upstream's own container def") needs a staleness check before blind adoption.** It's the right call when upstream is actively maintained (`jaeger`'s def was copied verbatim and never needed debugging, per lesson 4). It has no defense when upstream's Dockerfile is abandoned. `VirSorter`'s upstream Dockerfile (`simroux/VirSorter`) is from ~2016: `FROM ubuntu:14.04`, using the exact `Miniconda-latest`/classic-`conda` pattern lesson 2 already bans. On top of the silent SSL failure in lesson 6, the old Ubuntu base's `dpkg` itself broke under Apptainer's rootless/SELinux-enabled build sandbox on Hazel (`cannot set security execution context for maintainer script`) — a failure mode real Docker never hits, only Apptainer's build sandbox. `create_def_file.sh` now greps a discovered upstream def/Dockerfile for staleness signals (EOL base tags, `continuumio/miniconda` + classic `conda`, bare `http://` installer URLs) and, when found, tells Claude to keep upstream's install *logic* (what to install, in what order) but swap in this project's own validated primitives — a current Ubuntu LTS base, or `condaforge/miniforge3` + `mamba` — instead of copying the literal rotted commands. (ubuntu:18.04 was empirically the cutoff on Hazel — 14.04 and 16.04 both hit the dpkg/SELinux failure, 18.04 did not — but `condaforge/miniforge3`'s own current Ubuntu base is the actual fix, not another old-Ubuntu guess.)
+
+8. **A tool's own `--help`/`-h` doesn't always exit 0 — verify before picking it as `%test`.** `VirSorter`'s wrapper script calls Perl's `pod2usage()` on `-h`, which exits 2 by design (a `Pod::Usage` convention, not a failure). A build can be completely correct and still fail `%test` if the test blindly trusts `--help`'s exit code. Before relying on it, check how the tool's CLI framework actually terminates on `-h`/`--help` (this bit Perl `Getopt::Long`/`Pod::Usage` specifically, but the same risk applies to any custom arg parser); if it's nonzero by design, test on output content instead, e.g. `<command> --help 2>&1 | grep -q "<distinctive string>"`.
+
+9. **Old pinned ML-stack recipes rot against today's package index, not just the OS.** `virSearcher`'s README-documented install (`tensorflow==1.14.0`, `keras==2.3.0`, Python 3.6) never pinned its transitive `protobuf` dependency; left unpinned, pip resolved the latest `protobuf` release (4.x), which requires Python >=3.7 and broke on the very Python version the rest of the pin set requires. The fix was pinning `protobuf` to the last release with a compatible wheel (`3.19.6`) — found by reading pip's own "available versions" error output, not guessed. Separately, any pinned dependency needing a from-source C/C++ build on an old Python (no modern wheel for that manylinux tag, e.g. `grpcio`) needs `build-essential` and `python3-dev` installed up front — don't wait for the build to fail on a missing `Python.h`.
+
 ## Adding a New Tool (Typical Workflow)
 
 Builds and deployments must run from a **login node** — Apptainer needs internet access during `%post`.
@@ -45,7 +53,9 @@ and is never typed separately, so it can't drift from the URL it came from.
 - Sets `APPTAINER_CACHEDIR`/`APPTAINER_TMPDIR` to scratch (see lesson 1 above) before doing anything else.
 - Derives `TOOL` from `GITHUB_URL`. If `tools/<ToolName>/<ToolName>.def` is missing, calls `create_def_file.sh <GitHubURL>` to generate it via Claude (gathers real evidence first — see "How `.def` generation works" below), then pauses for you to review the generated file before continuing.
 - Extracts `Version` from the `.def` labels and names the output `tools/<ToolName>/<ToolName>-<Version>.sif`.
-- Appends the full build command trace to `container_build.log`.
+- Builds, retrying automatically on failure up to `DEF_FIX_MAX_ATTEMPTS` times (config.sh) — see "Automatic Retry on Build Failure" below.
+- Appends the full build command trace (including retry attempts) to `container_build.log`.
+- If the retry loop modified the `.def` at all, prints a diff against the originally-reviewed version and pauses for confirmation before deploying — a build passing isn't sufficient evidence the fix was legitimate (lesson 6), so this is a second, narrower review gate than the one after initial generation.
 - If `DEPLOY=true` and the container-mod repos metadata file is missing, calls `create_repos_entry.sh` to generate it by parsing the `.def` directly.
 - Copies the SIF to `/usr/local/usrapps/brc/brc_modules/images/` and runs `container-mod pipe` to register the module, then removes the local `.sif`.
 
@@ -78,6 +88,47 @@ Everything found in steps 2/3/5 is passed to Claude marked `AUTHORITATIVE`, with
 
 The script only writes the `.def` — it does not build. Review the output before running `apptainer_build.sh`.
 
+## Automatic Retry on Build Failure
+
+A Claude-generated `.def` failing its first real build is common enough
+(see the empirical lessons above) that `apptainer_build.sh` retries
+automatically instead of stopping at the first failure:
+
+1. **Classify the failure first.** `is_environment_failure` (`def_lib.sh`)
+   greps the build log tail for infra signatures — disk full, DNS
+   failure, rate limiting — that no `.def` edit can fix. These hard-stop
+   immediately; only genuinely content-shaped failures get retried.
+2. **Gather ground truth once.** On the first failure only,
+   `run_sandbox_diagnostic` (`apptainer_build.sh`) builds the same `.def`
+   with `--sandbox` and probes it directly — `command -v
+   <runscript-command>` and a manual `--help` run inside the live
+   filesystem — since a normal failed build leaves nothing on disk to
+   inspect, while a sandbox build does. The sandbox is always deleted
+   immediately after probing; it is never the shipped artifact.
+3. **Fix with the same evidence the `.def` was built from.**
+   `fix_def_file.sh` feeds Claude the current `.def`, the build log tail,
+   the sandbox probe (if gathered), and the original AUTHORITATIVE
+   evidence saved by `create_def_file.sh` to
+   `tools/<ToolName>/.def_context` — so a retry doesn't re-guess a
+   version number or bioconda package name it was already given a
+   verified answer for.
+4. **Never trust a fix without checking it first.**
+   `check_def_invariants` (`def_lib.sh`) rejects any regenerated `.def`
+   that dropped `set -e` from `%post`, hollowed out `%test` into a no-op,
+   used a non-bareword `%runscript`, or lost its `Version` label — before
+   another build is even attempted. This is the direct guard against a
+   model "fixing" a failing build by weakening it instead of the real bug
+   (lesson 6, self-inflicted).
+5. **A passing retried build still gets a human diff review** before
+   `DEPLOY` — the build succeeding proves the `.def` runs, not that the
+   retry loop's edit was the right one.
+
+Bounded by `DEF_FIX_MAX_ATTEMPTS` in `config.sh` (default 3 total
+attempts, i.e. 2 automatic fixes). `.def.attempt<N>` snapshots and the
+`.def_context` sidecar are scratch/audit only — gitignored, cleaned up at
+the end of each run; the durable record is the diffs already appended to
+`container_build.log`.
+
 ## Manual Build (Without the Wrapper)
 
 ```bash
@@ -106,10 +157,19 @@ Start from `template.def` — it documents all 5 install patterns with the decis
 | Script | Purpose |
 |--------|---------|
 | `create_def_file.sh <GitHubURL>` | Generates `tools/<ToolName>/<ToolName>.def` for the given repo (tool name derived from the URL) — see "How `.def` generation works" above. |
+| `fix_def_file.sh <DefPath> <LogTailFile> [SandboxDiagFile]` | Regenerates a `.def` that failed a real build, using the actual failure evidence — called automatically by `apptainer_build.sh`'s retry loop, not normally invoked directly. See "Automatic Retry on Build Failure" above. |
 | `create_repos_entry.sh <def_file> <output_path>` | Generates the container-mod metadata file (Description, Home Page, Programs) by parsing the `.def` directly — no Claude required, was never implicated in the old failures. |
 | `batch_build.sh <urls_file>` | Runs `apptainer_build.sh` once per GitHub URL in a list — see "Batch Builds" above. |
 
-Both scripts require the `claude` CLI (`/home/sdweave2/.local/bin/claude`, or on `PATH`) and outbound internet access (login node only).
+`def_lib.sh` is not invoked directly — it's a shared library sourced by
+`create_def_file.sh`, `fix_def_file.sh`, and `apptainer_build.sh` holding
+the logic that must stay identical across initial generation and
+retry-fixing (the prompt's hard requirements, output postprocessing, the
+invariant check, and the environment-failure classifier).
+
+`create_def_file.sh` and `fix_def_file.sh` require the `claude` CLI
+(`/home/sdweave2/.local/bin/claude`, or on `PATH`) and outbound internet
+access (login node only).
 
 ## Repo Layout
 
@@ -119,6 +179,8 @@ custom_container_module/
 ├── batch_build.sh            # loops apptainer_build.sh over a file of GitHub URLs
 ├── config.sh                 # site-specific paths, cache/tmp dirs (edit before use)
 ├── create_def_file.sh        # auto-generates .def via Claude + upstream-def/bioconda/import evidence
+├── fix_def_file.sh           # regenerates a .def from real build-failure evidence (called by apptainer_build.sh's retry loop)
+├── def_lib.sh                # shared prompt/postprocessing/invariant-check helpers, sourced by the three scripts above
 ├── create_repos_entry.sh     # auto-generates container-mod metadata by parsing the .def
 ├── template.def              # canonical .def template with the 5 install patterns
 ├── container_build.log       # timestamped build+deploy audit trail (gitignored)
@@ -134,11 +196,22 @@ custom_container_module/
 
 ## Testing Changes to the Pipeline Itself
 
-`tests/run_tests.sh` regression-tests `config.sh`, `apptainer_build.sh`, `create_def_file.sh`, and `create_repos_entry.sh` — run it after editing any of them:
+`tests/run_tests.sh` regression-tests `config.sh`, `apptainer_build.sh`, `create_def_file.sh`, `create_repos_entry.sh`, and `def_lib.sh` (`check_def_invariants`, `is_environment_failure`) — run it after editing any of them:
 
 ```bash
 ./tests/run_tests.sh            # unit tests + a real smoke build via apptainer_build.sh
 ./tests/run_tests.sh --no-build # unit tests only — no apptainer, no network
 ```
+
+`tests/run_retry_loop_tests.sh` (run automatically as part of the above,
+in both modes) exercises the retry loop's actual control flow — attempt
+counting, `is_environment_failure` short-circuiting, the sandbox
+diagnostic firing only on the first failure, `check_def_invariants`
+rejecting and reverting an unsafe fix, and the pre-`DEPLOY` confirmation
+gate — against real `apptainer_build.sh`/`def_lib.sh` code, but with
+`apptainer` replaced by an exported bash function and `fix_def_file.sh`
+replaced by a stub (so it never runs a real build or calls the real
+`claude` CLI). Run it directly (`./tests/run_retry_loop_tests.sh`) when
+iterating on the retry loop itself.
 
 The smoke build runs a real `apptainer build` against `tests/fixtures/smoketest.def` (debian-slim, `DEPLOY=false`) in an isolated temp directory — needs `module load apptainer` + internet (login node only), but never touches `container-mod`, this repo's `tools/`, or `container_build.log`. This is separate from validating a new tool's `.def` (lesson 5 above) — it verifies the wrapper script logic itself, not any one tool's install steps.

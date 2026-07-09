@@ -29,6 +29,7 @@
 set -euo pipefail
 
 source "$(dirname "$0")/config.sh"
+source "$(dirname "$0")/def_lib.sh"
 
 # --- Argument parsing ---
 # The GitHub URL is always taken from the CLI argument here, never from
@@ -149,6 +150,29 @@ if [[ -n "${TREE_PATHS_FILE:-}" && -s "$TREE_PATHS_FILE" ]]; then
     if [[ -n "$UPSTREAM_DEF_PATH" ]]; then
         echo "  Found upstream container definition: $UPSTREAM_DEF_PATH"
         UPSTREAM_DEF_CONTENT=$(curl -sf "https://raw.githubusercontent.com/$REPO_PATH/$DEFAULT_BRANCH/$UPSTREAM_DEF_PATH" 2>/dev/null | head -c 6000 || true)
+    fi
+fi
+
+# Staleness check on the upstream def/Dockerfile (CLAUDE.md lesson 7): an
+# old, abandoned recipe can look fine and still be broken today — VirSorter's
+# upstream Dockerfile (FROM ubuntu:14.04 + Miniconda-latest + classic conda,
+# ~2016) built "successfully" while silently failing to install its entire
+# bioconda toolchain (see lesson 6) and separately broke apt under
+# Apptainer's build sandbox on Hazel. Flag the same signals here so Claude
+# modernizes the base/package-manager instead of copying rotted commands.
+UPSTREAM_DEF_STALE=""
+if [[ -n "$UPSTREAM_DEF_CONTENT" ]]; then
+    if echo "$UPSTREAM_DEF_CONTENT" | grep -qiE '(ubuntu:(1[0-6]\.04)|debian:([1-9]|jessie|wheezy|stretch)\b)'; then
+        UPSTREAM_DEF_STALE+="- EOL base image tag detected (e.g. ubuntu:14.04/16.04 or old debian) — Apptainer's rootless/SELinux build sandbox on Hazel can fail apt-get on bases this old even when the same Dockerfile works fine under real Docker.
+"
+    fi
+    if echo "$UPSTREAM_DEF_CONTENT" | grep -qiE 'continuumio/(ana|mini)conda|Miniconda-?latest'; then
+        UPSTREAM_DEF_STALE+="- Legacy Miniconda/continuumio + classic conda detected — its ancient bundled OpenSSL can no longer TLS-handshake with anaconda.org (SSL: CERTIFICATE_VERIFY_FAILED), so bioconda installs silently fail. Use Pattern 4 (miniforge3 + mamba) for any conda/bioconda packages instead.
+"
+    fi
+    if echo "$UPSTREAM_DEF_CONTENT" | grep -qE 'http://[^[:space:]]+\.(sh|tar\.gz|tgz)\b'; then
+        UPSTREAM_DEF_STALE+="- Plain http:// (not https://) installer URL detected — verify it's still reachable; old academic/legacy mirrors rot.
+"
     fi
 fi
 
@@ -300,7 +324,19 @@ if [[ -n "$UPSTREAM_DEF_CONTENT" ]]; then
 Adapt this directly — keep its install logic intact. Only add/change: our
 Maintainer label, the Hazel bind-mount mkdir line in %post, and %labels
 Source/Version to match our conventions. Do not re-derive install steps.
-
+"
+    if [[ -n "$UPSTREAM_DEF_STALE" ]]; then
+        CONTEXT+="
+STALENESS WARNING — this upstream def/Dockerfile shows signs of being
+abandoned/outdated (see CLAUDE.md lesson 7):
+${UPSTREAM_DEF_STALE}
+Keep upstream's install LOGIC (what to install, in what order) but replace
+the specific flagged pieces with this project's own validated primitives
+(current Ubuntu LTS base, or Pattern 4's miniforge3 + mamba for conda/
+bioconda packages) rather than copying the rotted commands verbatim.
+"
+    fi
+    CONTEXT+="
 $UPSTREAM_DEF_CONTENT
 
 "
@@ -344,10 +380,17 @@ $GITHUB_README
 "
 fi
 
+# --- Persist the assembled evidence for later retry-fixing ---
+# A build-failure retry (fix_def_file.sh) needs to stay grounded in the
+# same AUTHORITATIVE facts (upstream def, bioconda/PyPI hit, discovered
+# imports) rather than re-guessing them from scratch. Sidecar file, not
+# part of the shipped .def, gitignored.
+printf '%s' "$CONTEXT" > "$DEF_DIR/.def_context"
+
 # --- Generate def file with Claude ---
 echo "Generating .def file with Claude..."
 
-"$CLAUDE" --model "$CLAUDE_MODEL" -p "Generate a complete Apptainer .def file for the tool '$TOOL'.
+"$CLAUDE" --model "$CLAUDE_MODEL" --allowedTools "WebFetch WebSearch" --disallowedTools "Write Edit Bash NotebookEdit" -p "Generate a complete Apptainer .def file for the tool '$TOOL'.
 
 Use the template below as a structural guide — it documents 5 install
 patterns (0-4) with explicit decision rules refined from real builds.
@@ -363,34 +406,7 @@ Source hierarchy — when information conflicts, follow this order:
    above, do NOT use Pattern 1 or invent a version number — no matching
    PyPI release was found, so treat this as Pattern 2 or 3 instead.
 
-Hard requirements (always apply):
-- Bootstrap: docker
-- Maintainer: sdweave2@ncsu.edu
-- Version label in %labels must equal the installed version exactly
-- %post must include: mkdir -p /rs1 /share /home /usr/local/usrapps
-- Pin the version explicitly in the install command for reproducibility —
-  use only a version number given to you above or found verbatim in the
-  README/repo tree; never invent or guess one
-- %runscript must be: exec <command> \"\$@\" — <command> MUST be a single
-  bare executable name with no spaces, no paths, and no interpreter
-  prefix (e.g. 'viralm', NOT 'python3 /opt/ViraLM/viralm.py'). It must be
-  resolvable via 'command -v <command>' inside the built container.
-  container-mod's Programs field and its generated exec wrappers both
-  require exactly this — a multi-word runscript silently breaks the
-  deployed module even though the container itself still runs fine.
-  If the tool has no console-script entry point (Pattern 3, a flat
-  script with no packaging), do NOT fall back to a raw interpreter
-  invocation or a PYTHONPATH-only export — create a wrapper in %post:
-    cat > /usr/local/bin/<command> << 'EOF'
-    #!/bin/bash
-    exec python3 /opt/<Tool>/<script>.py \"\$@\"
-    EOF
-    chmod +x /usr/local/bin/<command>
-  then point %runscript/%test at that bare <command> name.
-- %test must be a real invocation that exits 0 (prefer '<command> --help';
-  if the tool has no top-level --help flag, use a bare invocation that
-  prints usage and exits cleanly instead of guessing a flag that doesn't exist)
-- Output ONLY the .def file content — no explanation, no markdown fences, no commentary
+$(render_hard_requirements)
 
 Pick exactly ONE pattern (0-4) per the template's decision rules. In short:
 - Pattern 0 if an upstream def/Dockerfile was found above — adapt it.
@@ -405,39 +421,9 @@ $(cat "$TEMPLATE")
 ## Tool information:
 $CONTEXT" > "$DEF_FILE"
 
-# Strip markdown fences and any preamble/explanation Claude may have added.
-python3 - "$DEF_FILE" <<'PYEOF'
-import sys, re
-path = sys.argv[1]
-content = open(path).read()
-m = re.search(r'```[^\n]*\n(.*?)```', content, re.DOTALL)
-if m:
-    content = m.group(1)
-else:
-    idx = content.find('Bootstrap:')
-    if idx != -1:
-        content = content[idx:]
-with open(path, 'w') as f:
-    f.write(content.rstrip() + '\n')
-PYEOF
-
-if [[ ! -s "$DEF_FILE" ]]; then
-    echo "ERROR: Claude produced no output — aborting" >&2
-    rm -f "$DEF_FILE"
-    rmdir "$DEF_DIR" 2>/dev/null || true
-    exit 1
-fi
-
-# Claude sometimes can't produce a valid .def (e.g. it needs a tool call —
-# like looking up a version number or commit SHA — that isn't approved in
-# a headless run) and responds with a clarifying question instead. Catch
-# that here rather than reporting false success: real output always starts
-# with "Bootstrap:" per the hard requirements above.
-if [[ "$(head -1 "$DEF_FILE")" != Bootstrap:* ]]; then
-    echo "ERROR: Claude did not produce a valid .def file — it responded instead of generating one:" >&2
-    echo "---" >&2
-    cat "$DEF_FILE" >&2
-    echo "---" >&2
+# Strip markdown fences/preamble and sanity-check the output (shared with
+# fix_def_file.sh's retry path — see def_lib.sh).
+if ! finalize_generated_def "$DEF_FILE"; then
     rm -f "$DEF_FILE"
     rmdir "$DEF_DIR" 2>/dev/null || true
     exit 1

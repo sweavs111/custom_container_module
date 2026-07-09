@@ -4,5 +4,12 @@
 # Build audit log
 container_build.log
 
+# Retry-loop scratch/audit artifacts (create_def_file.sh's evidence
+# sidecar, apptainer_build.sh's per-attempt .def snapshots) — never part
+# of the shipped .def, never intended to be committed.
+**/.def_context
+**/*.def.attempt*
+**/*.def.orig.tmp
+
 # Requested images list
 mery_container_request_6.18.26.txt

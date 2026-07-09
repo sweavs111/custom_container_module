@@ -36,6 +36,7 @@ check() {
 
 echo "== derive_tool_name (config.sh) =="
 source config.sh
+source def_lib.sh
 check "plain repo"      "$(derive_tool_name 'https://github.com/Shamir-Lab/PlasClass')"     "PlasClass"
 check "trailing slash"  "$(derive_tool_name 'https://github.com/Shamir-Lab/PlasClass/')"    "PlasClass"
 check ".git suffix"     "$(derive_tool_name 'https://github.com/Shamir-Lab/PlasClass.git')" "PlasClass"
@@ -78,6 +79,130 @@ check "description" "$(grep '^Description:' "$PARSE_TMP/repos_out")" "Descriptio
 check "home page"   "$(grep '^Home Page:' "$PARSE_TMP/repos_out")"  "Home Page: https://github.com/example/tool"
 check "programs"    "$(grep '^Programs:' "$PARSE_TMP/repos_out")"  "Programs: tool"
 rm -rf "$PARSE_TMP"
+
+echo
+echo "== check_def_invariants (def_lib.sh) =="
+INVARIANT_TMP=$(mktemp -d)
+
+cat > "$INVARIANT_TMP/valid.def" <<'EOF'
+Bootstrap: docker
+From: ubuntu:22.04
+
+%labels
+    Maintainer sdweave2@ncsu.edu
+    Source https://github.com/example/tool
+    Version 1.2.3
+
+%post
+    set -e
+    echo "installing"
+
+%runscript
+    exec tool "$@"
+
+%test
+    tool --help
+EOF
+
+cat > "$INVARIANT_TMP/no_set_e.def" <<'EOF'
+Bootstrap: docker
+From: ubuntu:22.04
+
+%labels
+    Version 1.2.3
+
+%post
+    echo "installing"
+
+%runscript
+    exec tool "$@"
+
+%test
+    tool --help
+EOF
+
+cat > "$INVARIANT_TMP/trivial_test.def" <<'EOF'
+Bootstrap: docker
+From: ubuntu:22.04
+
+%labels
+    Version 1.2.3
+
+%post
+    set -e
+    echo "installing"
+
+%runscript
+    exec tool "$@"
+
+%test
+    exit 0
+EOF
+
+cat > "$INVARIANT_TMP/multiword_runscript.def" <<'EOF'
+Bootstrap: docker
+From: ubuntu:22.04
+
+%labels
+    Version 1.2.3
+
+%post
+    set -e
+    echo "installing"
+
+%runscript
+    exec python3 /opt/tool/tool.py "$@"
+
+%test
+    tool --help
+EOF
+
+check_invariant_result() {
+    local desc="$1" file="$2" expect="$3" actual
+    if check_def_invariants "$file" >/dev/null 2>&1; then
+        actual="pass"
+    else
+        actual="fail"
+    fi
+    check "$desc" "$actual" "$expect"
+}
+
+check_invariant_result "valid def passes"                    "$INVARIANT_TMP/valid.def"                "pass"
+check_invariant_result "missing set -e fails"                 "$INVARIANT_TMP/no_set_e.def"             "fail"
+check_invariant_result "trivial %test fails"                  "$INVARIANT_TMP/trivial_test.def"         "fail"
+check_invariant_result "multi-word %runscript fails"          "$INVARIANT_TMP/multiword_runscript.def"  "fail"
+
+rm -rf "$INVARIANT_TMP"
+
+echo
+echo "== is_environment_failure (def_lib.sh) =="
+
+check_env_failure_result() {
+    local desc="$1" text="$2" expect="$3" actual
+    if is_environment_failure "$text" >/dev/null 2>&1; then
+        actual="env"
+    else
+        actual="not-env"
+    fi
+    check "$desc" "$actual" "$expect"
+}
+
+check_env_failure_result "disk full classified as environment" \
+    "apptainer: error: No space left on device" "env"
+check_env_failure_result "DNS failure classified as environment" \
+    "curl: (6) Could not resolve host: github.com" "env"
+check_env_failure_result "rate limit classified as environment" \
+    "HTTP/1.1 429 Too Many Requests" "env"
+check_env_failure_result "SSL cert error NOT classified as environment" \
+    "SSL: CERTIFICATE_VERIFY_FAILED: unable to get local issuer certificate" "not-env"
+
+echo
+echo "== retry loop (apptainer_build.sh) — mocked apptainer + fix_def_file.sh =="
+if ./tests/run_retry_loop_tests.sh; then
+    PASS=$((PASS + 1))
+else
+    FAIL=$((FAIL + 1))
+fi
 
 echo
 if [[ "${1:-}" == "--no-build" ]]; then
