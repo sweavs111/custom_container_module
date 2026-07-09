@@ -61,6 +61,17 @@ and is never typed separately, so it can't drift from the URL it came from.
 
 **If the auto-generated `.def` needs manual fixes**, edit `tools/<ToolName>/<ToolName>.def` before re-running `apptainer_build.sh`. The script will not overwrite an existing `.def`.
 
+## Committing Changes
+
+Whenever a commit is made to this repo for any reason (pipeline script
+changes, doc updates, etc.), also commit any new or updated tool `.def`
+files under `tools/` sitting uncommitted at the time — don't leave them
+behind just because the commit at hand was about something else. `.def`
+files are the source of truth for a tool's build and are cheap/safe to
+commit (unlike `.sif` binaries, which stay gitignored); there's no reason
+for a working `.def` to linger unversioned once other work is being
+pushed anyway.
+
 ## Batch Builds
 
 To run the pipeline for a list of GitHub URLs instead of editing `config.sh` and re-running `apptainer_build.sh` by hand for each one, use `batch_build.sh`:
