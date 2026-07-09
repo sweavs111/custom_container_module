@@ -1,0 +1,124 @@
+Bootstrap: docker
+From: ubuntu:22.04
+
+%labels
+    Maintainer sdweave2@ncsu.edu
+    Source https://github.com/liuql2019/VFM
+    Version 102d9a41e786448fb21fb97d72812ab0d3904e16
+
+%help
+    VFM — identifies bacteriophages in metagenomic bins or contigs based on
+    gene and genome composition features. Ships two prediction modes
+    (bin-VFM for metagenomic bins, unbin-VFM for metagenomic contigs) and
+    matching training scripts for building custom models.
+
+    Usage:
+        apptainer run VFM.sif -d BINS_DIR [-t THREADS] [-m MODEL]
+
+    The default runscript invokes bin-VFM_predict. The other three entry
+    points are available via `apptainer exec VFM.sif <command> ...`:
+        bin-VFM_predict    -d BINS_DIR [-t THREADS] [-m MODEL]
+        unbin-VFM_pred     -f FA_FILE [-t THREADS] [-m MODEL]
+        train_bin-VFM      -vir VIR_DIR -bac BAC_DIR [-cpus THREADS] -model MODEL_NAME
+        train_unbin-VFM    -vir VIR_FILE -bac BAC_FILE [-cpus THREADS] -model MODEL_NAME
+
+    Options:
+        -d       Directory of metagenomic bins to classify (bin-VFM)
+        -f       FASTA file of metagenomic contigs to classify (unbin-VFM)
+        -t       Number of CPU threads (default 1)
+        -m       User-trained model to use for prediction (default: bundled model)
+        -vir     Directory/FASTA of phage bins/contigs for training
+        -bac     Directory/FASTA of bacterium bins/contigs for training
+        -cpus    Number of CPU threads for training
+        -model   Name for the newly trained model
+
+    Before use, download the pVOG/COG gene databases from the upstream
+    README's link and unzip them into VFM/models as documented upstream.
+
+    Example:
+        apptainer run VFM.sif -d ./data/demo/bins -t 4
+
+%post
+    set -e
+    export DEBIAN_FRONTEND=noninteractive
+
+    # Hazel bind-mount points
+    mkdir -p /rs1 /share /home /usr/local/usrapps
+
+    # System packages. prokka/hmmer/ncbi-blast+ are the external
+    # bioinformatic tools VFM shells out to for gene prediction, HMM
+    # search, and sequence alignment per upstream README's "Requirement
+    # and Dependency" section.
+    apt-get update -qq && \
+        apt-get install -y --no-install-recommends \
+            python3 \
+            python3-pip \
+            git \
+            ca-certificates \
+            prokka \
+            hmmer \
+            ncbi-blast+ && \
+        apt-get clean && \
+        rm -rf /var/lib/apt/lists/*
+
+    # Repo has no setup.py/pyproject.toml/requirements.txt; dependencies
+    # below come from parsing the actual import statements in the source
+    # (Bio -> biopython, sklearn -> scikit-learn), not the README.
+    pip3 install --no-cache-dir \
+        biopython \
+        numpy \
+        pandas \
+        scikit-learn
+
+    # No tagged releases exist upstream; pin to a specific commit for
+    # reproducibility.
+    git clone https://github.com/liuql2019/VFM.git /opt/VFM && \
+        cd /opt/VFM && \
+        git checkout 102d9a41e786448fb21fb97d72812ab0d3904e16
+
+    # methods.py does `from sklearn.externals import joblib` — a
+    # sub-module removed from scikit-learn in 0.23 (released 2020).
+    # Pinning to a pre-0.23 sklearn to keep it working is not viable: that
+    # old a release has no wheel for Python 3.10, and downgrading Python
+    # to match would ripple into every other dependency here. joblib is
+    # already installed as scikit-learn's own transitive dependency, so
+    # patch the source to import it directly — this is the modern
+    # replacement for the exact same object, not a behavior change.
+    sed -i 's/from sklearn\.externals import joblib/import joblib/' /opt/VFM/*.py
+
+    # None of the four top-level scripts have a console-script entry
+    # point; wrap each so it's callable by bare name. Python adds a
+    # script's own directory to sys.path, so any sibling-module imports
+    # resolve without extra PYTHONPATH configuration.
+    cat > /usr/local/bin/bin-VFM_predict << 'EOF'
+#!/bin/bash
+cd /opt/VFM && exec python3 /opt/VFM/bin-VFM_predict.py "$@"
+EOF
+    chmod +x /usr/local/bin/bin-VFM_predict
+
+    cat > /usr/local/bin/unbin-VFM_pred << 'EOF'
+#!/bin/bash
+cd /opt/VFM && exec python3 /opt/VFM/unbin-VFM_pred.py "$@"
+EOF
+    chmod +x /usr/local/bin/unbin-VFM_pred
+
+    cat > /usr/local/bin/train_bin-VFM << 'EOF'
+#!/bin/bash
+cd /opt/VFM && exec python3 /opt/VFM/train_bin-VFM.py "$@"
+EOF
+    chmod +x /usr/local/bin/train_bin-VFM
+
+    cat > /usr/local/bin/train_unbin-VFM << 'EOF'
+#!/bin/bash
+cd /opt/VFM && exec python3 /opt/VFM/train_unbin-VFM.py "$@"
+EOF
+    chmod +x /usr/local/bin/train_unbin-VFM
+
+%environment
+    export DEBIAN_FRONTEND=noninteractive
+
+%runscript
+    exec bin-VFM_predict "$@"
+
+%test
+    bin-VFM_predict --help

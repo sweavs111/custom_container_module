@@ -1,0 +1,127 @@
+Bootstrap: docker
+From: ubuntu:20.04
+
+%labels
+    Maintainer sdweave2@ncsu.edu
+    Source https://github.com/alyzart22/VirDetect-AI
+    Version c638337f
+
+%help
+    VirDetect-AI — deep learning (residual/CNN) tool for identifying partial
+    eukaryotic viral protein sequences in metagenomic data (Zárate et al.,
+    Briefings in Bioinformatics, 2025).
+
+    Usage:
+        apptainer run VirDetect-AI.sif <input.fasta> <kmer_stride> <mode>
+
+    Options (positional, no flag-based CLI):
+        input.fasta   FASTA file of amino acid sequences to classify
+        kmer_stride   Integer k-mer stride (recommended range: 20-60)
+        mode          0 for sequences >=300 amino acids, 1 for sequences >255 amino acids
+
+    Model file:
+        The trained model (model.h5) is NOT bundled in this image — it is
+        distributed separately via Google Drive/Zenodo by the upstream
+        authors. Bind-mount your downloaded model.h5 to
+        /opt/VirDetect-AI/API_VirDetect-AI/model.h5 before running, e.g.:
+            apptainer run --bind /path/to/model.h5:/opt/VirDetect-AI/API_VirDetect-AI/model.h5 \
+                VirDetect-AI.sif ./unknown.fasta 40 0
+
+    Example:
+        apptainer run VirDetect-AI.sif ./metagenomic_data/unknown.fasta 40 0
+
+%post
+    set -e
+    export DEBIAN_FRONTEND=noninteractive
+
+    # Hazel bind-mount points
+    mkdir -p /rs1 /share /home /usr/local/usrapps
+
+    # System packages — Ubuntu 20.04 ships Python 3.8 natively, which
+    # matches the exact interpreter upstream's own conda environment
+    # (virdetect-ai_cpu.yml) was solved and pinned against; tensorflow==2.3.0
+    # has no manylinux wheel for Python >=3.9, so a newer Ubuntu base is
+    # not usable here without a from-source Python build.
+    apt-get update -qq && \
+        apt-get install -y --no-install-recommends \
+            python3 \
+            python3-pip \
+            python3-dev \
+            build-essential \
+            git \
+            ca-certificates && \
+        apt-get clean && \
+        rm -rf /var/lib/apt/lists/*
+
+    # Install VirDetect-AI's real runtime dependencies, pinned to the exact
+    # versions in upstream's own environment file
+    # (API_VirDetect-AI/enviroments/virdetect-ai_cpu.yml). The prior build of
+    # this .def left h5py/scipy/protobuf unpinned, so pip's resolver picked
+    # today's latest releases for those three (h5py 3.11.0, scipy 1.10.1,
+    # protobuf 5.29.6) instead of what tensorflow==2.3.0 actually needs.
+    # protobuf>=3.20 in particular changed its generated-descriptor
+    # implementation, so tensorflow's own bundled *_pb2.py files (compiled
+    # against the old descriptor API) raised "TypeError: Descriptors cannot
+    # be created directly" the moment tensorflow was imported — pinning all
+    # three to the versions upstream's own env file specifies fixed that.
+    #
+    # That fix uncovered a second, independent floating-version bug: Pillow
+    # is never imported directly by this repo (or by upstream's env file —
+    # it's pulled in transitively as matplotlib's image backend), so it was
+    # left unpinned here too. pip resolved today's latest Pillow (10.4.0),
+    # whose PIL/_typing.py unconditionally evaluates
+    # `NumpyArray = npt.NDArray[Any]` at import time. numpy.typing.NDArray
+    # was only added in numpy 1.21 — this environment is pinned to
+    # numpy==1.20.3 (required by tensorflow==2.3.0's own numpy<1.19-1.20
+    # ceiling), so importing PIL raised
+    # "AttributeError: module 'numpy.typing' has no attribute 'NDArray'"
+    # the moment matplotlib (imported by seaborn) pulled in PIL — this was
+    # the exact %test failure. PIL/_typing.py did not exist yet in Pillow's
+    # 2021-era release line contemporaneous with matplotlib==3.3.4, so
+    # pinning Pillow==8.4.0 (last widely-used Pillow release before that
+    # module was added, still fully wheel-compatible with Python 3.8)
+    # removes the bad import path entirely rather than papering over it.
+    pip3 install --no-cache-dir \
+        biopython==1.79 \
+        h5py==2.10.0 \
+        keras==2.4.3 \
+        matplotlib==3.3.4 \
+        numpy==1.20.3 \
+        pandas==2.0.3 \
+        Pillow==8.4.0 \
+        progress==1.6 \
+        protobuf==3.17.2 \
+        scikit-learn==0.24.2 \
+        scipy==1.6.2 \
+        seaborn==0.11.1 \
+        tensorflow==2.3.0 \
+        wandb==0.12.11
+
+    # VirDetect-AI has no tagged release, so pin to the exact commit
+    # verified against the default branch at .def generation time
+    git clone https://github.com/alyzart22/VirDetect-AI.git /opt/VirDetect-AI
+    cd /opt/VirDetect-AI && git checkout c638337f
+
+    # api_virdetect-ai.py has no packaging/console-script entry point and
+    # takes positional sys.argv args only (fasta, kmer_stride, mode) — wrap
+    # it so container-mod gets a single bare executable name
+    cat > /usr/local/bin/virdetect-ai << 'INNEREOF'
+#!/bin/bash
+exec python3 /opt/VirDetect-AI/API_VirDetect-AI/api_virdetect-ai.py "$@"
+INNEREOF
+    chmod +x /usr/local/bin/virdetect-ai
+
+%environment
+    export DEBIAN_FRONTEND=noninteractive
+
+%runscript
+    exec virdetect-ai "$@"
+
+%test
+    # api_virdetect-ai.py has no --help/-h handling at all (it indexes
+    # sys.argv[1..3] directly with no argparse), so a bare or --help
+    # invocation would raise an uncaught IndexError rather than print
+    # usage and exit 0 — see CLAUDE.md lesson 8. Verify the wrapper
+    # resolves and that the script's actual import chain (its real
+    # dependency surface) loads cleanly instead.
+    command -v virdetect-ai && python3 -c "import tensorflow; import keras; from tensorflow.keras.utils import to_categorical; from Bio import SeqIO; from Bio.Seq import Seq; import numpy; import pandas; import seaborn; import matplotlib.pyplot; from progress.bar import Bar; import sklearn; import wandb; print('VirDetect-AI environment OK')"

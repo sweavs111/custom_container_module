@@ -98,13 +98,18 @@ From: ubuntu:22.04
         apptainer run <ToolName>.sif --help
 
 %post
+#!/bin/bash
     set -e
-    # set -o pipefail too if any install line below pipes through another
-    # command. Apptainer does NOT fail the build when a %post command
-    # fails on its own — without set -e, a broken install step (e.g. a
-    # dead installer URL, an SSL failure) silently continues, and the
-    # build reports success with a .sif that's missing whatever failed to
-    # install. See CLAUDE.md lesson 6.
+    # The shebang above MUST be the literal first line with zero leading
+    # whitespace — Apptainer runs %post under /bin/sh (dash) by default,
+    # and dash's 'set' doesn't support '-o pipefail' (fails immediately
+    # with "Illegal option -o pipefail" if attempted there). The bash
+    # shebang makes 'set -o pipefail' safe to add below if any install
+    # line pipes through another command. Apptainer does NOT fail the
+    # build when a %post command fails on its own — without set -e, a
+    # broken install step (e.g. a dead installer URL, an SSL failure)
+    # silently continues, and the build reports success with a .sif that's
+    # missing whatever failed to install. See CLAUDE.md lessons 6, 10.
     export DEBIAN_FRONTEND=noninteractive
 
     # Hazel bind-mount points

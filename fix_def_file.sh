@@ -79,7 +79,7 @@ $ORIGINAL_CONTEXT
 $(render_hard_requirements)
 
 ## Current .def file content to fix:
-$CURRENT_DEF" > "$FIX_TMP"
+$CURRENT_DEF" < /dev/null > "$FIX_TMP"
 
 if ! finalize_generated_def "$FIX_TMP"; then
     echo "ERROR: Claude did not produce a valid fixed .def — leaving $DEF_FILE unchanged" >&2

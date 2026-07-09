@@ -1,0 +1,45 @@
+Bootstrap: docker
+From: condaforge/miniforge3:24.3.0-0
+
+%labels
+    Maintainer sdweave2@ncsu.edu
+    Source https://github.com/Shamir-Lab/SCAPP
+    Version 0.1.4
+
+%help
+    SCAPP — assembles plasmids from metagenomic assembly graphs.
+
+    Usage:
+        apptainer run SCAPP.sif -g <fastg graph> -o <output directory> [-k <max k value>] -r1 <reads 1> -r2 <reads 2> [-p <num processes>]
+
+    Options:
+        -g/--graph          Assembly graph in FASTG format
+        -o/--output_dir     Output directory
+        -k/--max_k          Maximum k value used by the assembler
+        -r1/--reads1        Paired-end reads file 1
+        -r2/--reads2        Paired-end reads file 2
+        -p/--num_processes  Number of processes to use
+        -b/--bam            Existing BAM alignment of reads to assembly graph (skips re-alignment)
+
+    Example:
+        apptainer run SCAPP.sif -g assembly_graph.fastg -o scapp_out -k 77 -r1 reads_1.fastq -r2 reads_2.fastq -p 8
+
+%post
+    set -e
+    export DEBIAN_FRONTEND=noninteractive
+
+    # Hazel bind-mount points
+    mkdir -p /rs1 /share /home /usr/local/usrapps
+
+    mamba create -n scapp -y -c conda-forge -c bioconda scapp=0.1.4
+    mamba clean -afy
+
+%environment
+    export DEBIAN_FRONTEND=noninteractive
+    export PATH="/opt/conda/envs/scapp/bin:$PATH"
+
+%runscript
+    exec scapp "$@"
+
+%test
+    scapp --help

@@ -390,7 +390,18 @@ printf '%s' "$CONTEXT" > "$DEF_DIR/.def_context"
 # --- Generate def file with Claude ---
 echo "Generating .def file with Claude..."
 
-"$CLAUDE" --model "$CLAUDE_MODEL" --allowedTools "WebFetch WebSearch" --disallowedTools "Write Edit Bash NotebookEdit" -p "Generate a complete Apptainer .def file for the tool '$TOOL'.
+# Write to a temp file first, not directly to $DEF_FILE. This script runs
+# under 'set -euo pipefail' — testing the claude invocation explicitly with
+# 'if !' (rather than letting a bare failure trigger set -e) is what lets
+# us clean up on failure instead of set -e silently killing the script
+# mid-write, which used to leave a stale, truncated $DEF_FILE behind.
+# Because apptainer_build.sh only regenerates a .def when the file is
+# MISSING, that stale file used to silently and permanently block every
+# future run for this tool.
+GEN_TMP=$(mktemp)
+CLEANUP_FILES+=("$GEN_TMP")
+
+if ! "$CLAUDE" --model "$CLAUDE_MODEL" --allowedTools "WebFetch WebSearch" --disallowedTools "Write Edit Bash NotebookEdit" -p "Generate a complete Apptainer .def file for the tool '$TOOL'.
 
 Use the template below as a structural guide — it documents 5 install
 patterns (0-4) with explicit decision rules refined from real builds.
@@ -419,15 +430,20 @@ Pick exactly ONE pattern (0-4) per the template's decision rules. In short:
 $(cat "$TEMPLATE")
 
 ## Tool information:
-$CONTEXT" > "$DEF_FILE"
-
-# Strip markdown fences/preamble and sanity-check the output (shared with
-# fix_def_file.sh's retry path — see def_lib.sh).
-if ! finalize_generated_def "$DEF_FILE"; then
-    rm -f "$DEF_FILE"
+$CONTEXT" < /dev/null > "$GEN_TMP"; then
+    echo "ERROR: claude CLI invocation failed" >&2
     rmdir "$DEF_DIR" 2>/dev/null || true
     exit 1
 fi
+
+# Strip markdown fences/preamble and sanity-check the output (shared with
+# fix_def_file.sh's retry path — see def_lib.sh).
+if ! finalize_generated_def "$GEN_TMP"; then
+    rmdir "$DEF_DIR" 2>/dev/null || true
+    exit 1
+fi
+
+mv "$GEN_TMP" "$DEF_FILE"
 
 echo ""
 echo "Created: $DEF_FILE"

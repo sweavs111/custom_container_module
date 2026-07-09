@@ -1,0 +1,161 @@
+Bootstrap: docker
+From: ubuntu:22.04
+
+%labels
+    Maintainer sdweave2@ncsu.edu
+    Source https://github.com/cmmr/virmap
+    Version 037156e6
+
+%help
+    VirMAP — maximal viral information recovery from sequence data
+    (Ajami et al. 2018, Nature Communications, doi:10.1038/s41467-018-05658-8).
+    A Perl pipeline that merges nucleotide and protein evidence to
+    taxonomically classify viral reconstructions from metagenomic
+    sequence data, independent of genome coverage or read overlap.
+
+    No versioned release/tag exists upstream, so this image is built
+    from GitHub commit 037156e694ff493a6f93e5ad0b4894a512242c35 (default
+    branch: master).
+
+    Recommended hardware (per upstream README): 64GB+ RAM, 12+ cores.
+
+    Usage:
+        apptainer run virmap.sif [options] <databases> --readF ReadSet1_R1 ...
+
+    Run with no arguments to print the full usage/options text baked
+    into the tool itself (Virmap.pl has no --help/-h flag; it only
+    prints usage when invoked with zero arguments):
+
+    Example:
+        apptainer run virmap.sif
+
+%post
+    set -e
+    export DEBIAN_FRONTEND=noninteractive
+
+    # Hazel bind-mount points
+    mkdir -p /rs1 /share /home /usr/local/usrapps
+
+    # System packages: build toolchain + Perl XS headers (for CPAN modules
+    # below), RocksDB C library + its own dependencies (for the RocksDB
+    # Perl module), expat headers/library (for XML::Parser, an XS module
+    # that XML::SAX::Expat -> XML::Simple depend on transitively), Java
+    # (for BBMap's wrapper scripts), Python3/pip (for khmer's
+    # normalize-by-median.py), and the small utilities VirMAP shells out
+    # to directly (pigz, lbzip2, zstd, GNU parallel).
+    apt-get update -qq && \
+        apt-get install -y --no-install-recommends \
+            build-essential \
+            git \
+            ca-certificates \
+            wget \
+            curl \
+            perl \
+            libperl-dev \
+            cpanminus \
+            pkg-config \
+            librocksdb-dev \
+            libsnappy-dev \
+            liblz4-dev \
+            libzstd-dev \
+            libbz2-dev \
+            libgflags-dev \
+            libexpat1-dev \
+            default-jre \
+            python3 \
+            python3-pip \
+            pigz \
+            lbzip2 \
+            zstd \
+            parallel && \
+        apt-get clean && \
+        rm -rf /var/lib/apt/lists/*
+
+    # CPAN dependencies (authoritative list from upstream README's
+    # "CPAN Dependencies" section) — install via cpanm, skip tests to
+    # avoid unrelated flaky-test failures blocking the build.
+    cpanm --notest \
+        Compress::Zstd \
+        REST::Client \
+        OpenSourceOrg::API \
+        POSIX::1003::Sysconf \
+        Sereal \
+        Text::Levenshtein::Damerau::XS \
+        Text::Levenshtein::XS \
+        Array::Shuffle \
+        Array::Split \
+        Sys::MemInfo \
+        XML::Hash::XS \
+        Cpanel::JSON::XS \
+        Statistics::Basic \
+        XML::Simple \
+        RocksDB
+
+    # khmer, for normalize-by-median.py (README pins no version)
+    pip3 install --no-cache-dir khmer
+
+    # diamond v0.9.32 (README-pinned version, from upstream's installer script)
+    mkdir -p /opt/diamond && cd /opt/diamond && \
+        wget -q https://github.com/bbuchfink/diamond/releases/download/v0.9.32/diamond-linux64.tar.gz && \
+        tar xzf diamond-linux64.tar.gz && \
+        rm diamond-linux64.tar.gz && \
+        ln -s /opt/diamond/diamond /usr/local/bin/diamond
+
+    # BBMap / bbtools 38.84 (README-pinned version)
+    cd /opt && \
+        wget -q "https://sourceforge.net/projects/bbmap/files/BBMap_38.84.tar.gz/download" -O BBMap_38.84.tar.gz && \
+        tar xzf BBMap_38.84.tar.gz && \
+        rm BBMap_38.84.tar.gz
+
+    # NCBI BLAST+ 2.10.0 (README-pinned version)
+    mkdir -p /opt/blast && cd /opt/blast && \
+        wget -q https://ftp.ncbi.nlm.nih.gov/blast/executables/blast+/2.10.0/ncbi-blast-2.10.0+-x64-linux.tar.gz && \
+        tar xzf ncbi-blast-2.10.0+-x64-linux.tar.gz --strip-components=1 && \
+        rm ncbi-blast-2.10.0+-x64-linux.tar.gz
+
+    # MEGAHIT v1.1.4 (README-pinned version)
+    mkdir -p /opt/megahit && cd /opt/megahit && \
+        wget -q https://github.com/voutcn/megahit/releases/download/v1.1.4/megahit_v1.1.4_LINUX_CPUONLY_x86_64-bin.tar.gz && \
+        tar xzf megahit_v1.1.4_LINUX_CPUONLY_x86_64-bin.tar.gz --strip-components=1 && \
+        rm megahit_v1.1.4_LINUX_CPUONLY_x86_64-bin.tar.gz
+
+    # vsearch v2.14.2 (README-pinned version)
+    mkdir -p /opt/vsearch && cd /opt/vsearch && \
+        wget -q https://github.com/torognes/vsearch/releases/download/v2.14.2/vsearch-2.14.2-linux-x86_64.tar.gz && \
+        tar xzf vsearch-2.14.2-linux-x86_64.tar.gz --strip-components=1 && \
+        rm vsearch-2.14.2-linux-x86_64.tar.gz
+
+    # Pre-accept GNU parallel's citation notice so it doesn't block on
+    # first invocation at runtime (also covered by $PARALLEL in
+    # %environment, belt-and-suspenders).
+    echo 'will cite' | parallel --citation 1>/dev/null 2>/dev/null || true
+
+    # VirMAP itself, pinned to the commit this .def was generated from
+    # (no upstream release/tag exists to pin instead)
+    git clone https://github.com/cmmr/virmap.git /opt/virmap && \
+        cd /opt/virmap && \
+        git checkout 037156e694ff493a6f93e5ad0b4894a512242c35
+
+    # FAlite — custom dependency with no package manager distribution,
+    # loaded via PERL5LIB alongside the rest of /opt/virmap (README's
+    # "Custom Dependencies" section)
+    curl -fsSL http://korflab.ucdavis.edu/Unix_and_Perl/FAlite.pm -o /opt/virmap/FAlite.pm
+
+    # Wrapper so container-mod gets a single bare executable name
+    cat > /usr/local/bin/virmap << 'INNEREOF'
+#!/bin/bash
+exec perl /opt/virmap/Virmap.pl "$@"
+INNEREOF
+    chmod +x /usr/local/bin/virmap
+
+%environment
+    export DEBIAN_FRONTEND=noninteractive
+    export PATH="/opt/bbmap:/opt/blast/bin:/opt/megahit:/opt/vsearch/bin:${PATH}"
+    export PERL5LIB="/opt/virmap:${PERL5LIB:-}"
+    export PARALLEL="--will-cite"
+
+%runscript
+    exec virmap "$@"
+
+%test
+    virmap
