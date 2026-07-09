@@ -1,5 +1,5 @@
 Bootstrap: docker
-From: continuumio/miniconda3:latest
+From: condaforge/miniforge3:24.3.0-0
 
 %labels
     Maintainer sdweave2@ncsu.edu
@@ -45,7 +45,7 @@ From: continuumio/miniconda3:latest
     # Create the PlasMAAG conda environment.
     # Channel priority mirrors envs/PlasMAAG.yaml: pytorch > conda-forge > bioconda > defaults.
     # c-compiler and cxx-compiler are needed to build vamb (Cython extensions) from source.
-    conda create -n PlasMAAG -y \
+    mamba create -n PlasMAAG -y \
         -c pytorch -c conda-forge -c bioconda -c defaults \
         python=3.10 \
         c-compiler \

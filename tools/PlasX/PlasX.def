@@ -1,5 +1,5 @@
 Bootstrap: docker
-From: continuumio/miniconda3:23.5.2-0
+From: condaforge/miniforge3:24.3.0-0
 
 %labels
     Maintainer sdweave2@ncsu.edu
@@ -41,7 +41,7 @@ From: continuumio/miniconda3:23.5.2-0
     # Create conda environment with all dependencies as specified in the README.
     # mmseqs2=10.6d92c must come from bioconda; --override-channels + strict
     # priority match the README exactly to avoid solver conflicts.
-    conda create -n plasx -y \
+    mamba create -n plasx -y \
         -c anaconda -c conda-forge -c bioconda \
         --override-channels \
         --strict-channel-priority \

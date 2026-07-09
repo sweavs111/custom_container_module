@@ -1,0 +1,109 @@
+Bootstrap: docker
+From: condaforge/miniforge3:24.3.0-0
+
+%labels
+    Maintainer sdweave2@ncsu.edu
+    Source https://github.com/simroux/VirSorter
+    Version 2.2.4
+
+%help
+    VirSorter — mining viral signal from microbial genomic data. Identifies
+    viral (phage) sequences within microbial genomic and metagenomic data
+    using a reference database of viral protein clusters and HMM searches.
+
+    Usage:
+        apptainer run VirSorter.sif -f <contigs.fasta> --db <1|2> --wdir <output_dir> [options]
+
+    Options:
+        -f              Input fasta file of contigs to classify
+        --db            Reference database to use (1 = RefSeqABVir only,
+                         2 = RefSeqABVir + Viromes)
+        --wdir          Output/working directory
+        --ncpu          Number of CPUs to use
+        --data-dir      Path to the VirSorter data directory (download
+                         separately from https://zenodo.org/record/1168727/files/virsorter-data-v2.tar.gz)
+        --diamond       Use diamond instead of blastp for faster searches
+        --keep-db       Keep the intermediate Predicted_viral_sequences database directory
+        -h              Show full usage
+
+    Example:
+        apptainer run VirSorter.sif -f contigs.fasta --db 2 --wdir output --data-dir /path/to/virsorter-data --diamond
+
+%post
+    export DEBIAN_FRONTEND=noninteractive
+
+    # Hazel bind-mount points
+    mkdir -p /rs1 /share /home /usr/local/usrapps
+
+    # System packages — git/curl/ca-certificates to fetch MetaGeneAnnotator
+    # and the wrapper script; libdb-dev matches upstream's own Dockerfile.
+    apt-get update -qq && \
+        apt-get install -y --no-install-recommends \
+            libdb-dev \
+            curl \
+            ca-certificates \
+            git && \
+        apt-get clean && \
+        rm -rf /var/lib/apt/lists/*
+
+    # MetaGeneAnnotator gene caller, required by VirSorter's scoring pipeline
+    curl -LO http://metagene.nig.ac.jp/metagene/mga_x86_64.tar.gz && \
+        tar -xvf mga_x86_64.tar.gz -C /usr/local/bin/ mga_linux_ia64 && \
+        rm mga_x86_64.tar.gz
+
+    # Upstream's Dockerfile bootstraps its own Conda via a 2016-era
+    # "Miniconda-latest" installer running classic conda 4.0.5 on Python
+    # 2.7 — that installer's bundled OpenSSL can no longer complete a TLS
+    # handshake with anaconda.org (SSL: CERTIFICATE_VERIFY_FAILED), so every
+    # bioconda package in the original recipe silently failed to install
+    # (Apptainer's %post has no set -e, so a plain `apptainer build` never
+    # surfaced this — it looked like a successful build with a broken
+    # toolchain). Using this project's established miniforge3+mamba base
+    # avoids bootstrapping conda from scratch and actually installs these
+    # packages. wrapper_phage_contigs_sorter_iPlant.pl uses `#!/usr/bin/env
+    # perl`, so it runs under whichever perl is first on PATH — installing
+    # perl itself into this env (not relying on system perl) keeps the
+    # interpreter and its bioconda-provided modules (BioPerl, File::Which,
+    # etc.) consistent.
+    mamba create -n virsorter -y -c conda-forge -c bioconda \
+        perl \
+        perl-bioperl \
+        perl-file-which \
+        perl-parallel-forkmanager \
+        perl-list-moreutils \
+        mcl=14.137 \
+        muscle \
+        blast \
+        hmmer=3.1b2 \
+        diamond
+    mamba clean -afy
+
+    # Fetch the wrapper script and Scripts/ directory that upstream's
+    # Dockerfile COPYs in from its build context
+    git clone --depth 1 https://github.com/simroux/VirSorter.git /opt/VirSorter
+    cp /opt/VirSorter/wrapper_phage_contigs_sorter_iPlant.pl /usr/local/bin/
+    cp -r /opt/VirSorter/Scripts /usr/local/bin/Scripts
+    chmod +x /usr/local/bin/wrapper_phage_contigs_sorter_iPlant.pl
+
+    # Only /var/lib/apt/lists is cleaned here, not /tmp or /var/tmp — under
+    # Apptainer's rootless build on Hazel those are host-shared (unlike a
+    # real Docker layer), and a broad rm -rf there fails on host-owned files
+    # like systemd-private-* dirs and ipa-client-join.log.
+    apt-get purge -y --auto-remove curl git ca-certificates && \
+        apt-get clean && \
+        rm -rf /var/lib/apt/lists/*
+
+%environment
+    export DEBIAN_FRONTEND=noninteractive
+    export PATH="/opt/conda/envs/virsorter/bin:/usr/local/bin:${PATH}"
+
+%runscript
+    exec wrapper_phage_contigs_sorter_iPlant.pl "$@"
+
+%test
+    # wrapper_phage_contigs_sorter_iPlant.pl calls pod2usage() on -h/--help,
+    # which exits 2 by design (Pod::Usage's convention, not a failure) — so
+    # exit code can't be the success signal here. Check the help text itself
+    # renders instead, which only happens if perl resolved every module
+    # (BioPerl, File::Which, Parallel::ForkManager, List::MoreUtils, etc.).
+    wrapper_phage_contigs_sorter_iPlant.pl -h 2>&1 | grep -q "Working directory"

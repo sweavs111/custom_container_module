@@ -1,0 +1,151 @@
+Bootstrap: docker
+From: python:3.9-slim
+
+%labels
+    Maintainer sdweave2@ncsu.edu
+    Source https://github.com/Celestial-Bai/INHERIT
+    Version 5ea758c0
+
+%help
+    INHERIT — identification of bacteriophage genome sequences from
+    metagenome assemblies using a pre-train/fine-tune DNABERT-based
+    representation-learning model.
+
+    No upstream release tags exist, so this image pins the source to
+    commit 5ea758c0d9ad0c694bc01ad4b962581b6ba5cc0d on the master branch.
+
+    INHERIT requires two pre-trained model checkpoints that are NOT
+    bundled in this image (they are only distributed via Google Drive
+    and are too large to fetch reliably during a container build):
+        Bacteria pre-trained model:
+            https://drive.google.com/drive/folders/1d0ubDne87j5rf5K6DYKSOKxnw_eGV-Dr
+        Phage pre-trained model:
+            https://drive.google.com/drive/folders/17oyt613Hr4984SX7IX72fVP3zPrGADvB
+    IHT_config.py resolves these as paths relative to the tool's own
+    working directory inside the container, so bind-mount them to these
+    exact in-container paths:
+        --bind /path/to/bac_pretrained_model:/opt/INHERIT/INHERIT/bac_pretrained_model
+        --bind /path/to/pha_pretrained_model:/opt/INHERIT/INHERIT/pha_pretrained_model
+    Pass absolute host paths for --sequence/--model/--out, since the
+    wrapper cd's into the tool's install directory before running.
+
+    Usage:
+        apptainer run --nv \
+            --bind /path/to/bac_pretrained_model:/opt/INHERIT/INHERIT/bac_pretrained_model \
+            --bind /path/to/pha_pretrained_model:/opt/INHERIT/INHERIT/pha_pretrained_model \
+            INHERIT.sif \
+            --sequence /abs/test.fasta --withpretrain True \
+            --model /abs/INHERIT.pt --out /abs/test_out.txt
+
+    Options (see IHT_predict.py):
+        --sequence      Input FASTA file of contigs to classify
+        --withpretrain  Whether to load the DNABERT pre-trained weights (True/False)
+        --model         Path to the fine-tuned INHERIT checkpoint (.pt)
+        --out           Output path for predictions
+
+    Example:
+        apptainer run --nv INHERIT.sif --help
+
+%post
+    export DEBIAN_FRONTEND=noninteractive
+
+    # Hazel bind-mount points
+    mkdir -p /rs1 /share /home /usr/local/usrapps
+
+    apt-get update -qq && \
+        apt-get install -y --no-install-recommends \
+            build-essential \
+            git \
+            ca-certificates && \
+        apt-get clean && \
+        rm -rf /var/lib/apt/lists/*
+
+    # INHERIT ships no setup.py/pyproject.toml/requirements.txt (its
+    # dependencies.txt is a non-standard filename, not a real packaging
+    # manifest), so this list was derived from the repo's actual
+    # `import`/`from` statements rather than the README.
+    #   - "sklearn" import is provided by the "scikit-learn" PyPI
+    #     package (the PyPI "sklearn" stub package was removed in Dec 2023).
+    #   - "linecache" is a Python standard-library module, not a pip package.
+    #   - Base image is python:3.9-slim, not ubuntu:22.04: tokenizers
+    #     0.10.x (see pin below) only ships prebuilt wheels through
+    #     cp39 — on Ubuntu 22.04's default Python 3.10 it fell back to
+    #     building from source and failed (needs a Rust toolchain plus a
+    #     newer setuptools than the base image ships; found empirically).
+    #   - "sacremoses" is not directly imported anywhere in INHERIT's own
+    #     source, but the vendored transformers fork's
+    #     dependency_versions_check.py hard-requires it at import time
+    #     (found empirically: %test failed with PackageNotFoundError for
+    #     sacremoses before this was added).
+    #   - "huggingface_hub" is pinned below 1.0: the vendored transformers
+    #     fork's file_utils.py imports HfFolder/Repository, which
+    #     huggingface_hub removed in its 1.0 rewrite (found empirically:
+    #     %test failed with ImportError on the unpinned latest release).
+    #   - "tokenizers" is pinned to the fork's own hard-coded version
+    #     window: dependency_versions_check.py raises ImportError unless
+    #     0.10.1 <= tokenizers < 0.11 (found empirically: %test failed
+    #     against the unpinned latest 0.22.2).
+    #   - "torch_xla" is deliberately NOT installed: it's only used by the
+    #     vendored transformers fork's is_torch_tpu_available() TPU check
+    #     (find_spec, not a hard requirement), Hazel has no TPUs, and its
+    #     compiled _XLAC extension actually failed to load in this
+    #     container ("cannot enable executable stack"), which find_spec
+    #     does not swallow when the package is present but broken —
+    #     leaving it uninstalled makes the check correctly report
+    #     "unavailable" via ModuleNotFoundError instead (found empirically).
+    pip3 install --no-cache-dir \
+        cookiecutter \
+        fastapi \
+        filelock \
+        "huggingface_hub<1" \
+        jax \
+        keras2onnx \
+        matplotlib \
+        numpy \
+        onnx \
+        onnxruntime \
+        packaging \
+        psutil \
+        py3nvml \
+        pydantic \
+        requests \
+        sacremoses \
+        scikit-learn \
+        scipy \
+        sentencepiece \
+        starlette \
+        tensorflow \
+        timeout_decorator \
+        "tokenizers>=0.10.1,<0.11" \
+        torch \
+        tqdm \
+        transformers \
+        uvicorn
+
+    # No release tags exist upstream, so pin to a specific commit for
+    # reproducibility instead of floating on master.
+    git clone https://github.com/Celestial-Bai/INHERIT.git /opt/INHERIT
+    cd /opt/INHERIT && git checkout 5ea758c0d9ad0c694bc01ad4b962581b6ba5cc0d
+
+    # No console-script entry point is provided, so wrap the predict
+    # script as a single bare executable for container-mod's Programs
+    # field and generated exec wrappers. The repo nests a subdirectory of
+    # the same name (INHERIT/INHERIT/...), so the real script lives at
+    # /opt/INHERIT/INHERIT/IHT_predict.py. IHT_config.py resolves
+    # CONFIG_PATH/BAC_PTRMODEL/PHA_PTRMODEL relative to the process's cwd
+    # (not the script's own directory), so the wrapper must cd there first.
+    cat > /usr/local/bin/inherit << 'EOF'
+#!/bin/bash
+cd /opt/INHERIT/INHERIT
+exec python3 IHT_predict.py "$@"
+EOF
+    chmod +x /usr/local/bin/inherit
+
+%environment
+    export DEBIAN_FRONTEND=noninteractive
+
+%runscript
+    exec inherit "$@"
+
+%test
+    inherit --help

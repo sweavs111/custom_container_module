@@ -23,6 +23,17 @@ From: ubuntu:22.04
 #   mkdir line. Do not re-derive install steps the upstream authors
 #   already solved.
 #
+#   STALENESS CHECK before adopting it as-is: an old/abandoned upstream
+#   Dockerfile can look fine and still be broken today. Watch for EOL base
+#   image tags (ubuntu:14.04/16.04, debian:8 or older), continuumio/miniconda
+#   + classic `conda` (its bundled OpenSSL can no longer TLS-handshake with
+#   anaconda.org — silently fails since %post has no set -e, see below), or
+#   bare http:// installer URLs. If any are present, keep upstream's install
+#   *logic* (what to install, in what order) but swap in this project's own
+#   validated primitives (a current Ubuntu LTS base, or Pattern 4's
+#   miniforge3 + mamba for any conda/bioconda packages) instead of copying
+#   the literal rotted commands. See CLAUDE.md lessons 6-7.
+#
 # Pattern 1 — PyPI release, modern wheel available (From: ubuntu:22.04).
 #   create_def_file.sh no longer auto-checks PyPI (its only input is a
 #   GitHub URL, not a name to search with) — only pick this pattern if
@@ -87,6 +98,13 @@ From: ubuntu:22.04
         apptainer run <ToolName>.sif --help
 
 %post
+    set -e
+    # set -o pipefail too if any install line below pipes through another
+    # command. Apptainer does NOT fail the build when a %post command
+    # fails on its own — without set -e, a broken install step (e.g. a
+    # dead installer URL, an SSL failure) silently continues, and the
+    # build reports success with a .sif that's missing whatever failed to
+    # install. See CLAUDE.md lesson 6.
     export DEBIAN_FRONTEND=noninteractive
 
     # Hazel bind-mount points
@@ -117,4 +135,11 @@ From: ubuntu:22.04
     exec <command> "$@"
 
 %test
+    # --help/-h doesn't always exit 0 — some CLI frameworks (notably Perl's
+    # Getopt::Long + Pod::Usage, where pod2usage() exits 2 by design) treat
+    # help text as a usage error, not success. Check how the tool's help
+    # flag actually terminates before relying on its exit code; if it's
+    # nonzero by design, test on output content instead, e.g.:
+    #   <command> --help 2>&1 | grep -q "<distinctive string from the help text>"
+    # See CLAUDE.md lesson 8.
     <command> --help

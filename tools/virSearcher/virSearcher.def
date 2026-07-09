@@ -1,0 +1,114 @@
+Bootstrap: docker
+From: ubuntu:18.04
+
+%labels
+    Maintainer sdweave2@ncsu.edu
+    Source https://github.com/DrJackson18/virSearcher
+    Version ca523fec90f5b28eb943ed7e8257c7cddb9a18f7
+
+%help
+    virSearcher — identifies bacteriophages in metagenomic contigs by
+    combining a CNN classifier with gene-based BLAST evidence.
+
+    Usage:
+        apptainer run virSearcher.sif -i INPUT_SEQS [-t THR] [-s OUTPUT_FILE] [-c THREAD] [--G] [--B]
+
+    Options:
+        -i INPUT_SEQS   Input FASTA file of metagenomic contigs (required)
+        -t THR          Threshold for calling a contig a phage (default 0.5)
+        -s OUTPUT_FILE  Output CSV path (default: alongside the input file)
+        -c THREAD       Max CPU threads to use (default 4)
+        --G             Skip the gene-scan step (if already run)
+        --B             Skip the BLAST step (if already run)
+
+    Before first use, download virSearcher's gene database (see upstream
+    README for the download link) and set it up with:
+        apptainer exec virSearcher.sif setup_database -d database.zip
+
+    Example:
+        apptainer run virSearcher.sif -i ./demo/contigs.fasta -s ./result/contigs.csv -c 8
+
+%post
+    export DEBIAN_FRONTEND=noninteractive
+
+    # Hazel bind-mount points
+    mkdir -p /rs1 /share /home /usr/local/usrapps
+
+    # System packages. ncbi-blast+ provides `blastp`, which virSearcher shells
+    # out to by bare command name (per upstream README). python3-tk satisfies
+    # the tkinter import found in the source. Ubuntu 18.04 is used (instead of
+    # 22.04) because its default python3 is 3.6, matching the "Python3.6" the
+    # README specifies development/testing against — the pinned
+    # tensorflow==1.14.0/keras==2.3.0 versions below have no wheels for the
+    # newer python3 shipped on 22.04.
+    apt-get update -qq && \
+        apt-get install -y --no-install-recommends \
+            python3 \
+            python3-dev \
+            python3-pip \
+            python3-setuptools \
+            python3-wheel \
+            python3-tk \
+            ncbi-blast+ \
+            git \
+            ca-certificates \
+            build-essential && \
+        apt-get clean && \
+        rm -rf /var/lib/apt/lists/*
+
+    # grpcio (a transitive tensorflow==1.14.0 dependency) has no wheel for
+    # this platform and falls back to a source build via "python setup.py
+    # egg_info", which needs a C++ compiler (build-essential, above) and
+    # setuptools present up front — apt's python3-pip alone doesn't
+    # guarantee setuptools is importable by that subprocess.
+    pip3 install --no-cache-dir --upgrade setuptools wheel
+
+    # Repo has no setup.py/pyproject.toml/requirements.txt; dependencies and
+    # their versions come from the upstream README's documented install
+    # command, not guessed.
+    # protobuf isn't pinned upstream; left unpinned, pip resolves the latest
+    # release (4.x), which requires Python >=3.7 and breaks on this image's
+    # Python 3.6. 3.19.6 is the newest release with a cp36 wheel available.
+    pip3 install --no-cache-dir \
+        numpy==1.19.2 \
+        pandas==0.20.3 \
+        biopython==1.78 \
+        protobuf==3.19.6 \
+        tensorflow==1.14.0 \
+        keras==2.3.0
+
+    # No tagged releases exist upstream; pin to a specific commit for
+    # reproducibility.
+    git clone https://github.com/DrJackson18/virSearcher.git /opt/virSearcher && \
+        cd /opt/virSearcher && \
+        git checkout ca523fec90f5b28eb943ed7e8257c7cddb9a18f7
+
+    # FragGeneScan ships prebuilt binaries with permissions that don't survive
+    # git clone; upstream README's own "Error Solution" section documents
+    # this exact chmod as the fix.
+    chmod -R 750 /opt/virSearcher/FragGeneScan1.31
+
+    # predict.py/setup_database.py have no console-script entry point; wrap
+    # them so they're callable by bare name. Python adds a script's own
+    # directory to sys.path, so the sibling-module imports inside predict.py
+    # (func.py, preprocessing.py) resolve without extra PYTHONPATH setup.
+    cat > /usr/local/bin/virsearcher << 'EOF'
+#!/bin/bash
+cd /opt/virSearcher && exec python3 /opt/virSearcher/predict.py "$@"
+EOF
+    chmod +x /usr/local/bin/virsearcher
+
+    cat > /usr/local/bin/setup_database << 'EOF'
+#!/bin/bash
+cd /opt/virSearcher && exec python3 /opt/virSearcher/setup_database.py "$@"
+EOF
+    chmod +x /usr/local/bin/setup_database
+
+%environment
+    export DEBIAN_FRONTEND=noninteractive
+
+%runscript
+    exec virsearcher "$@"
+
+%test
+    virsearcher --help
