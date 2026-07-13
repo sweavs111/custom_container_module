@@ -97,19 +97,20 @@ From: ubuntu:22.04
     Example:
         apptainer run <ToolName>.sif --help
 
-%post
-#!/bin/bash
+%post -c /bin/bash
     set -e
-    # The shebang above MUST be the literal first line with zero leading
-    # whitespace — Apptainer runs %post under /bin/sh (dash) by default,
-    # and dash's 'set' doesn't support '-o pipefail' (fails immediately
-    # with "Illegal option -o pipefail" if attempted there). The bash
-    # shebang makes 'set -o pipefail' safe to add below if any install
-    # line pipes through another command. Apptainer does NOT fail the
-    # build when a %post command fails on its own — without set -e, a
-    # broken install step (e.g. a dead installer URL, an SSL failure)
-    # silently continues, and the build reports success with a .sif that's
-    # missing whatever failed to install. See CLAUDE.md lessons 6, 10.
+    # The header above MUST read exactly '%post -c /bin/bash' — Apptainer's
+    # %post does NOT honor a '#!/bin/bash' shebang line inside the body;
+    # that mechanism doesn't exist for this section. Without the -c
+    # argument, %post runs under /bin/sh (dash) by default, and dash's
+    # 'set' doesn't support '-o pipefail' (fails immediately with
+    # "Illegal option -o pipefail" if attempted there). '-c /bin/bash'
+    # makes 'set -o pipefail' safe to add below if any install line pipes
+    # through another command. Apptainer does NOT fail the build when a
+    # %post command fails on its own — without set -e, a broken install
+    # step (e.g. a dead installer URL, an SSL failure) silently continues,
+    # and the build reports success with a .sif that's missing whatever
+    # failed to install. See CLAUDE.md lessons 6, 10.
     export DEBIAN_FRONTEND=noninteractive
 
     # Hazel bind-mount points

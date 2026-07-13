@@ -54,7 +54,7 @@ From: ubuntu:22.04
     Source https://github.com/example/retrytesttool
     Version 1.2.3
 
-%post
+%post -c /bin/bash
     set -e
     echo "installing"
 

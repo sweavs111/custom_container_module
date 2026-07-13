@@ -23,21 +23,24 @@ Hard requirements (always apply):
 - Bootstrap: docker
 - Maintainer: sdweave2@ncsu.edu
 - Version label in %labels must equal the installed version exactly
-- %post's very first line, with ZERO leading whitespace (a shebang must be
-  the literal first two bytes of the script to be honored), must be
-  '#!/bin/bash'. The next line must be 'set -e' (add 'set -o pipefail' too
-  if any install line pipes through another command). Apptainer runs %post
-  under /bin/sh (dash) by default, and dash's 'set' does not support the
-  '-o pipefail' option — attempting it there fails immediately with
-  "Illegal option -o pipefail", aborting %post before any real install work
-  runs. The bash shebang makes both 'set -e' and 'set -o pipefail' behave
-  correctly regardless of whether this particular .def happens to pipe
-  anything. Apptainer does NOT fail the build when a %post command fails on
-  its own — without set -e, a broken install step (dead URL, SSL failure,
-  missing package) silently continues, and the build reports success with a
-  .sif that's missing whatever failed to install. This exact failure mode is
-  why VirSorter's original def "built" while never actually installing its
-  bioconda toolchain — see CLAUDE.md lesson 6.
+- The %post section header must be exactly '%post -c /bin/bash' (with that
+  exact -c argument) and its first body line must be 'set -e' (add
+  'set -o pipefail' too if any install line pipes through another command).
+  Apptainer's %post does NOT honor a '#!/bin/bash' shebang line inside the
+  body — that is not a supported mechanism for this section, and the line
+  is silently inert; %post always runs under /bin/sh (dash) unless the
+  interpreter is set via '-c <shell>' on the header line itself. Without
+  that, dash's 'set' does not support the '-o pipefail' option — attempting
+  it there fails immediately with "Illegal option -o pipefail", aborting
+  %post before any real install work runs. '%post -c /bin/bash' makes both
+  'set -e' and 'set -o pipefail' behave correctly regardless of whether this
+  particular .def happens to pipe anything. Apptainer does NOT fail the
+  build when a %post command fails on its own — without set -e, a broken
+  install step (dead URL, SSL failure, missing package) silently continues,
+  and the build reports success with a .sif that's missing whatever failed
+  to install. This exact failure mode is why VirSorter's original def
+  "built" while never actually installing its bioconda toolchain — see
+  CLAUDE.md lesson 6.
 - %post must include: mkdir -p /rs1 /share /home /usr/local/usrapps
 - Pin the version explicitly in the install command for reproducibility —
   use only a version number given to you above or found verbatim in the
@@ -113,16 +116,16 @@ check_def_invariants() {
     local file="$1"
     local reasons=()
 
-    local post_raw_first
-    post_raw_first=$(_def_extract_section "$file" post | sed -n '1p')
-    if [[ "$post_raw_first" != "#!/bin/bash" ]]; then
-        reasons+=("%post's first line is not exactly '#!/bin/bash' with zero leading whitespace (found: '${post_raw_first:-<empty>}') — required because Apptainer's default /bin/sh (dash) doesn't support 'set -o pipefail'")
+    local post_header
+    post_header=$(grep -m1 -E '^%post([[:space:]]|$)' "$file")
+    if [[ "$post_header" != "%post -c /bin/bash" ]]; then
+        reasons+=("%post header is not exactly '%post -c /bin/bash' (found: '${post_header:-<empty>}') — required because Apptainer's %post does not honor shebang lines; the interpreter can only be set via -c on the header line, and without it %post runs under /bin/sh (dash), which doesn't support 'set -o pipefail'")
     fi
 
     local post_first
     post_first=$(_def_extract_section "$file" post | grep -vE '^[[:space:]]*(#.*)?$' | head -1 | sed -E 's/^[[:space:]]+//')
     if [[ "$post_first" != "set -e"* ]]; then
-        reasons+=("%post does not have 'set -e' as its first non-shebang/non-comment line (found: '${post_first:-<empty>}')")
+        reasons+=("%post does not have 'set -e' as its first non-comment line (found: '${post_first:-<empty>}')")
     fi
 
     local version

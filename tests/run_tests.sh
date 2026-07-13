@@ -93,7 +93,7 @@ From: ubuntu:22.04
     Source https://github.com/example/tool
     Version 1.2.3
 
-%post
+%post -c /bin/bash
     set -e
     echo "installing"
 
@@ -111,7 +111,7 @@ From: ubuntu:22.04
 %labels
     Version 1.2.3
 
-%post
+%post -c /bin/bash
     echo "installing"
 
 %runscript
@@ -128,7 +128,7 @@ From: ubuntu:22.04
 %labels
     Version 1.2.3
 
-%post
+%post -c /bin/bash
     set -e
     echo "installing"
 
@@ -146,7 +146,7 @@ From: ubuntu:22.04
 %labels
     Version 1.2.3
 
-%post
+%post -c /bin/bash
     set -e
     echo "installing"
 

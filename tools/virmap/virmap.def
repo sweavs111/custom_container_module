@@ -29,7 +29,12 @@ From: ubuntu:22.04
     Example:
         apptainer run virmap.sif
 
-%post
+%files
+    # Vendored copy of FAlite.pm — see the %post comment below for why
+    # this isn't fetched over the network at build time.
+    tools/virmap/FAlite.pm /opt/FAlite.pm
+
+%post -c /bin/bash
     set -e
     export DEBIAN_FRONTEND=noninteractive
 
@@ -39,10 +44,17 @@ From: ubuntu:22.04
     # System packages: build toolchain + Perl XS headers (for CPAN modules
     # below), RocksDB C library + its own dependencies (for the RocksDB
     # Perl module), expat headers/library (for XML::Parser, an XS module
-    # that XML::SAX::Expat -> XML::Simple depend on transitively), Java
-    # (for BBMap's wrapper scripts), Python3/pip (for khmer's
-    # normalize-by-median.py), and the small utilities VirMAP shells out
-    # to directly (pigz, lbzip2, zstd, GNU parallel).
+    # that XML::SAX::Expat -> XML::Simple depend on transitively), OpenSSL
+    # headers (for Net::SSLeay/IO::Socket::SSL, pulled in transitively by
+    # REST::Client and OpenSourceOrg::API to make HTTPS calls — without
+    # this, Net::SSLeay's Makefile.PL fails to locate OpenSSL and that
+    # module's build fails, which fails cpanm's overall exit status even
+    # though most other requested modules install fine, which is what
+    # actually tripped set -e in the previous build), zlib headers (widely
+    # linked against by other XS modules in this list), Java (for BBMap's
+    # wrapper scripts), Python3/pip (for khmer's normalize-by-median.py),
+    # and the small utilities VirMAP shells out to directly (pigz,
+    # lbzip2, zstd, GNU parallel).
     apt-get update -qq && \
         apt-get install -y --no-install-recommends \
             build-essential \
@@ -61,6 +73,8 @@ From: ubuntu:22.04
             libbz2-dev \
             libgflags-dev \
             libexpat1-dev \
+            libssl-dev \
+            zlib1g-dev \
             default-jre \
             python3 \
             python3-pip \
@@ -91,37 +105,55 @@ From: ubuntu:22.04
         XML::Simple \
         RocksDB
 
-    # khmer, for normalize-by-median.py (README pins no version)
-    pip3 install --no-cache-dir khmer
+    # khmer, for normalize-by-median.py. khmer's last PyPI release (2.1.1)
+    # ships wheels only through cp37; on this base's Python 3.10, pip falls
+    # back to a from-source build that fails. bioconda carries a current
+    # build (3.0.0a3) with its own self-contained Python, so install it into
+    # a dedicated conda env via Miniforge3 + mamba instead (project
+    # convention — see CLAUDE.md lesson 2).
+    #
+    # All downloads below use curl -fsSL with --retry instead of wget -q:
+    # wget -q suppresses ALL output, success or failure, so a failed fetch
+    # here previously aborted the build (via set -e) with zero diagnostic
+    # text — indistinguishable in the log from a content bug, and invisible
+    # to this project's own log-signature-based environment-failure
+    # classifier. curl -fsS still prints an error on failure while staying
+    # silent on success, and --retry absorbs transient network blips.
+    curl -fsSL --retry 3 --retry-delay 5 https://github.com/conda-forge/miniforge/releases/latest/download/Miniforge3-Linux-x86_64.sh -o /tmp/miniforge.sh && \
+        bash /tmp/miniforge.sh -b -p /opt/miniforge3 && \
+        rm /tmp/miniforge.sh
+    /opt/miniforge3/bin/mamba create -y -n khmer -c bioconda -c conda-forge khmer=3.0.0a3 && \
+        /opt/miniforge3/bin/mamba clean -a -y
+    ln -s /opt/miniforge3/envs/khmer/bin/normalize-by-median.py /usr/local/bin/normalize-by-median.py
 
     # diamond v0.9.32 (README-pinned version, from upstream's installer script)
     mkdir -p /opt/diamond && cd /opt/diamond && \
-        wget -q https://github.com/bbuchfink/diamond/releases/download/v0.9.32/diamond-linux64.tar.gz && \
+        curl -fsSL --retry 3 --retry-delay 5 https://github.com/bbuchfink/diamond/releases/download/v0.9.32/diamond-linux64.tar.gz -o diamond-linux64.tar.gz && \
         tar xzf diamond-linux64.tar.gz && \
         rm diamond-linux64.tar.gz && \
         ln -s /opt/diamond/diamond /usr/local/bin/diamond
 
     # BBMap / bbtools 38.84 (README-pinned version)
     cd /opt && \
-        wget -q "https://sourceforge.net/projects/bbmap/files/BBMap_38.84.tar.gz/download" -O BBMap_38.84.tar.gz && \
+        curl -fsSL --retry 3 --retry-delay 5 "https://sourceforge.net/projects/bbmap/files/BBMap_38.84.tar.gz/download" -o BBMap_38.84.tar.gz && \
         tar xzf BBMap_38.84.tar.gz && \
         rm BBMap_38.84.tar.gz
 
     # NCBI BLAST+ 2.10.0 (README-pinned version)
     mkdir -p /opt/blast && cd /opt/blast && \
-        wget -q https://ftp.ncbi.nlm.nih.gov/blast/executables/blast+/2.10.0/ncbi-blast-2.10.0+-x64-linux.tar.gz && \
+        curl -fsSL --retry 3 --retry-delay 5 https://ftp.ncbi.nlm.nih.gov/blast/executables/blast+/2.10.0/ncbi-blast-2.10.0+-x64-linux.tar.gz -o ncbi-blast-2.10.0+-x64-linux.tar.gz && \
         tar xzf ncbi-blast-2.10.0+-x64-linux.tar.gz --strip-components=1 && \
         rm ncbi-blast-2.10.0+-x64-linux.tar.gz
 
     # MEGAHIT v1.1.4 (README-pinned version)
     mkdir -p /opt/megahit && cd /opt/megahit && \
-        wget -q https://github.com/voutcn/megahit/releases/download/v1.1.4/megahit_v1.1.4_LINUX_CPUONLY_x86_64-bin.tar.gz && \
+        curl -fsSL --retry 3 --retry-delay 5 https://github.com/voutcn/megahit/releases/download/v1.1.4/megahit_v1.1.4_LINUX_CPUONLY_x86_64-bin.tar.gz -o megahit_v1.1.4_LINUX_CPUONLY_x86_64-bin.tar.gz && \
         tar xzf megahit_v1.1.4_LINUX_CPUONLY_x86_64-bin.tar.gz --strip-components=1 && \
         rm megahit_v1.1.4_LINUX_CPUONLY_x86_64-bin.tar.gz
 
     # vsearch v2.14.2 (README-pinned version)
     mkdir -p /opt/vsearch && cd /opt/vsearch && \
-        wget -q https://github.com/torognes/vsearch/releases/download/v2.14.2/vsearch-2.14.2-linux-x86_64.tar.gz && \
+        curl -fsSL --retry 3 --retry-delay 5 https://github.com/torognes/vsearch/releases/download/v2.14.2/vsearch-2.14.2-linux-x86_64.tar.gz -o vsearch-2.14.2-linux-x86_64.tar.gz && \
         tar xzf vsearch-2.14.2-linux-x86_64.tar.gz --strip-components=1 && \
         rm vsearch-2.14.2-linux-x86_64.tar.gz
 
@@ -138,8 +170,19 @@ From: ubuntu:22.04
 
     # FAlite — custom dependency with no package manager distribution,
     # loaded via PERL5LIB alongside the rest of /opt/virmap (README's
-    # "Custom Dependencies" section)
-    curl -fsSL http://korflab.ucdavis.edu/Unix_and_Perl/FAlite.pm -o /opt/virmap/FAlite.pm
+    # "Custom Dependencies" section). Used verbatim (via `use FAlite;`) by
+    # Virmap.pl and ~20 other .pl scripts in this repo, all against the
+    # same nextEntry/def/seq API — not swappable for e.g. BioPerl's
+    # Bio::SeqIO without patching every call site across the whole repo.
+    # Previously fetched directly from korflab.ucdavis.edu (Ian Korf's own
+    # academic site, and upstream's own virmapInstall.pl does the same) —
+    # that host went unreachable (connection timeout, not a 404) and
+    # broke this build with no content change on our end. Vendored via
+    # %files above instead, from the KorfLab's own GitHub mirror
+    # (github.com/KorfLab/Perl_utils/blob/master/FAlite.pm, content
+    # verified identical/API-compatible), so this build no longer depends
+    # on that host staying up.
+    cp /opt/FAlite.pm /opt/virmap/FAlite.pm
 
     # Wrapper so container-mod gets a single bare executable name
     cat > /usr/local/bin/virmap << 'INNEREOF'

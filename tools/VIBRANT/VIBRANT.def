@@ -1,0 +1,59 @@
+Bootstrap: docker
+From: condaforge/miniforge3:24.3.0-0
+
+%labels
+    Maintainer sdweave2@ncsu.edu
+    Source https://github.com/AnantharamanLab/VIBRANT
+    Version 1.2.1
+
+%help
+    VIBRANT (Virus Identification By iteRative ANnoTation) — automated
+    recovery, annotation, and curation of microbial viruses, and
+    evaluation of viral community function from genomic sequences
+    (metagenomes, genomes, metagenome-assembled genomes). Uses a hybrid
+    machine learning / protein similarity approach on prodigal-predicted
+    genes to identify viruses.
+
+    Usage:
+        apptainer run VIBRANT.sif -i <input.fasta> [options]
+
+    Options:
+        -i         Input fasta file of sequences to classify (required)
+        -f         Format of input: nucl or prot (default nucl)
+        -t         Number of parallel processors to use
+        -folder    Output folder directory
+        -no_plot   Suppress figure/plot generation
+        -h         Show help menu and exit
+
+    Databases:
+        VIBRANT requires ~11GB of reference databases (KEGG, Pfam, VOG)
+        that are NOT bundled in this image. Download and compile them
+        with VIBRANT_setup.py into a persistent directory (bind-mount one
+        under /rs1 or /share) before running real jobs.
+
+    Example:
+        apptainer run VIBRANT.sif -i contigs.fasta -t 4
+
+%post -c /bin/bash
+    set -e
+    export DEBIAN_FRONTEND=noninteractive
+
+    # Hazel bind-mount points
+    mkdir -p /rs1 /share /home /usr/local/usrapps
+
+    # AUTHORITATIVE: bioconda package "vibrant" version 1.2.1. mamba (not
+    # classic conda) resolves this combined conda-forge+bioconda request
+    # in minutes instead of hanging indefinitely (CLAUDE.md lesson 2).
+    mamba create -n vibrant -y -c conda-forge -c bioconda "vibrant=1.2.1"
+    mamba clean -afy
+
+%environment
+    export DEBIAN_FRONTEND=noninteractive
+    export PATH="/opt/conda/envs/vibrant/bin:$PATH"
+
+%runscript
+    exec VIBRANT_run.py "$@"
+
+%test
+    set -e
+    VIBRANT_run.py -h

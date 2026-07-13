@@ -1,0 +1,54 @@
+Bootstrap: docker
+From: condaforge/miniforge3:24.3.0-0
+
+%labels
+    Maintainer sdweave2@ncsu.edu
+    Source https://github.com/gussow/seeker
+    Version 1.0.3
+
+%help
+    seeker — alignment-free discrimination between bacterial and phage DNA
+    sequences using an LSTM deep-learning model. Requires no reference
+    genome, genomic alignment, or direct genome comparison.
+
+    Usage:
+        apptainer run seeker.sif <input.fa>
+
+    Options:
+        input.fa    Fasta file of sequences to classify
+
+    Output:
+        A prediction (bacteria/phage) and score (0-1) for each sequence in
+        the input Fasta. Scores above 0.5 indicate phage, below 0.5
+        indicate bacteria.
+
+    Example:
+        apptainer run seeker.sif contigs.fasta
+
+%post -c /bin/bash
+    set -e
+    export DEBIAN_FRONTEND=noninteractive
+
+    # Hazel bind-mount points
+    mkdir -p /rs1 /share /home /usr/local/usrapps
+
+    # seeker's bundled LSTM model was saved by a pre-Keras-3 stack and its
+    # config still carries the legacy `time_major` kwarg. Keras 3 (the
+    # default with unconstrained tensorflow>=2.16 on conda-forge) rejects
+    # that kwarg and load_model() throws. Pin tensorflow below the version
+    # where conda-forge switched the default to standalone Keras 3 so the
+    # env resolves the bundled/legacy Keras 2 API that still accepts it.
+    mamba create -n seeker -y -c conda-forge -c bioconda "seeker=1.0.3" "tensorflow<2.16"
+    mamba clean -afy
+
+%environment
+    export DEBIAN_FRONTEND=noninteractive
+    export PATH="/opt/conda/envs/seeker/bin:$PATH"
+
+%runscript
+    exec predict-metagenome "$@"
+
+%test
+    set -e
+    printf '>seeker_test_seq\nACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGT\n' > /tmp/seeker_test.fa
+    predict-metagenome /tmp/seeker_test.fa
