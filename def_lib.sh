@@ -155,6 +155,36 @@ check_def_invariants() {
     return 0
 }
 
+# Known GPU-framework package names. Deliberately a flat, fixed lookup list
+# (not a decision tree) — a tool either mentions one of these somewhere in
+# its already-gathered evidence or it doesn't; there is no judgment call.
+GPU_SIGNAL_TOKENS=(torch tensorflow jax jaxlib cupy onnxruntime-gpu mxnet paddlepaddle)
+
+# Greps concatenated evidence text (discovered imports, packaging file
+# content, README, PyPI summary, upstream def content — whatever the
+# caller has already gathered) for known GPU-framework package names.
+# Prints each matched token on its own line and returns 0 if any were
+# found, else prints nothing and returns 1. Word-boundary regex avoids
+# false positives like matching 'torch' inside 'torchlight'.
+detect_gpu_signals() {
+    local text="$*" tok
+    local matches=()
+    for tok in "${GPU_SIGNAL_TOKENS[@]}"; do
+        # Boundary excludes only alnum/underscore, NOT hyphen — several of
+        # these tokens (e.g. onnxruntime-gpu) are hyphenated themselves, and
+        # a hyphen-as-word-char boundary would block matching 'tensorflow'
+        # at the start of 'tensorflow-gpu'.
+        if echo "$text" | grep -qiE "(^|[^a-zA-Z0-9_])${tok}([^a-zA-Z0-9_]|$)"; then
+            matches+=("$tok")
+        fi
+    done
+    if (( ${#matches[@]} == 0 )); then
+        return 1
+    fi
+    printf '%s\n' "${matches[@]}"
+    return 0
+}
+
 # Classifies a build-log tail as an infra/environment failure (network,
 # disk, rate limits) that no .def edit can fix — a retry loop should hard
 # stop on these instead of burning a Claude call against an unfixable

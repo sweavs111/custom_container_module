@@ -78,6 +78,40 @@ From: ubuntu:22.04
 #   mamba create -n <tool> -y -c conda-forge -c bioconda <pkg>=<ver>
 #   mamba clean -afy
 #   Activate in %environment: prepend /opt/conda/envs/<tool>/bin to PATH
+#
+# GPU addendum — applies ON TOP of whichever pattern (0-4) was picked
+#   above, whenever GPU-capable dependencies were detected (torch,
+#   tensorflow, jax, cupy, onnxruntime-gpu, etc. — see create_def_file.sh's
+#   detect_gpu_signals). This is deliberately NOT a 6th competing install
+#   pattern — it's a small set of additions layered on top of Pattern 0-4's
+#   normal install logic:
+#
+#   - Hazel only exposes GPUs to a container via `apptainer run --nv` at
+#     RUN time, which binds the host's driver in. A pip-installed
+#     CUDA-enabled framework wheel (torch, tensorflow, jax, ...) already
+#     bundles its own CUDA runtime libraries — the container itself does
+#     NOT need an nvidia/cuda base image or a baked-in driver for this
+#     common case. Do NOT switch the base image just because GPU deps were
+#     detected.
+#   - The ONLY reason to use an nvidia/cuda or framework-provided GPU base
+#     image (e.g. tensorflow/tensorflow:*-gpu) is if upstream's own
+#     def/Dockerfile already uses one (Pattern 0) — keep it as-is in that
+#     case, same staleness caveat as Pattern 0 above applies.
+#   - %help MUST document that this container requires a GPU node and must
+#     be invoked with `apptainer run --nv <image>.sif`, not a bare
+#     `apptainer run`.
+#   - %test MUST stay a CPU-safe invocation (--help or equivalent). Builds
+#     always run on a login node with no GPU attached, so %test can never
+#     exercise real GPU inference/training even when that's the tool's
+#     entire purpose — do not invent a test that assumes GPU availability.
+#   - If a CUDA-specific package pin appears verbatim in the evidence above
+#     (e.g. requirements.txt pinning torch==2.1.0+cu121, or a custom
+#     --index-url), use that exact pin — a plain `pip install torch` can
+#     silently resolve to a CPU-only wheel depending on platform tags.
+#
+#   Out of scope for now: bioconda/Pattern 4 GPU variants (e.g. a
+#   cudatoolkit conda dependency) — no tool in this repo's history has
+#   needed that path yet, so there's nothing empirical to generalize from.
 # ------------------------------------------------------------
 
 %labels

@@ -1,0 +1,33 @@
+Bootstrap: docker
+From: debian:12-slim
+
+# Fixture used only by tests/run_tests.sh to smoke-test the GPU addendum's
+# *shape* (template.def's "GPU addendum") against a real `apptainer build`
+# — not a real tool, not deployed, never touched by create_def_file.sh.
+# Deliberately does NOT install a real GPU framework (no torch/tensorflow)
+# so the build stays fast and needs no CUDA base image; it only proves
+# that a GPU-flavored %help/%test/%post shape builds cleanly.
+#
+# Must be glibc-based, not musl — see tests/fixtures/smoketest.def's note
+# on fakeroot/faked requiring glibc.
+
+%labels
+    Maintainer sdweave2@ncsu.edu
+    Source https://github.com/brc-smoketest/gpu-smoketest
+    Version 0.0.1
+
+%help
+    gpu-smoketest — fixture container for tests/run_tests.sh, not a real tool
+
+    This container requires a GPU node and must be invoked with:
+        apptainer run --nv gpu-smoketest-0.0.1.sif
+
+%post -c /bin/bash
+    set -e
+    mkdir -p /rs1 /share /home /usr/local/usrapps
+
+%runscript
+    exec echo "gpu-smoketest ok" "$@"
+
+%test
+    echo "gpu-smoketest ok"
