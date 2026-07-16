@@ -53,15 +53,33 @@ and is never typed separately, so it can't drift from the URL it came from.
 
 `apptainer_build.sh` handles all steps automatically:
 - Sets `APPTAINER_CACHEDIR`/`APPTAINER_TMPDIR` to scratch (see lesson 1 above) before doing anything else.
-- Derives `TOOL` from `GITHUB_URL`. If `tools/<ToolName>/<ToolName>.def` is missing, calls `create_def_file.sh <GitHubURL>` to generate it via Claude (gathers real evidence first — see "How `.def` generation works" below), then pauses for you to review the generated file before continuing.
-- Extracts `Version` from the `.def` labels and names the output `tools/<ToolName>/<ToolName>-<Version>.sif`.
+- Derives `TOOL` from `GITHUB_URL`, then locates its `.def` via `find_tool_def` (`def_lib.sh` — see "`.def` File Naming" below). If none is found, calls `create_def_file.sh <GitHubURL>` to generate it via Claude (gathers real evidence first — see "How `.def` generation works" below), then pauses for you to review the generated file before continuing.
+- Extracts `Version` from the `.def` labels and names the output `.sif` `tools/<ToolName>/<ToolName>-<Version>.sif`.
 - Builds, retrying automatically on failure up to `DEF_FIX_MAX_ATTEMPTS` times (config.sh) — see "Automatic Retry on Build Failure" below.
 - Appends the full build command trace (including retry attempts) to `container_build.log`.
 - If the retry loop modified the `.def` at all, prints a diff against the originally-reviewed version and pauses for confirmation before deploying — a build passing isn't sufficient evidence the fix was legitimate (lesson 6), so this is a second, narrower review gate than the one after initial generation.
 - If `DEPLOY=true` and the container-mod repos metadata file is missing, calls `create_repos_entry.sh` to generate it by parsing the `.def` directly.
 - Copies the SIF to `/usr/local/usrapps/brc/brc_modules/images/` and runs `container-mod pipe` to register the module, then removes the local `.sif`.
 
-**If the auto-generated `.def` needs manual fixes**, edit `tools/<ToolName>/<ToolName>.def` before re-running `apptainer_build.sh`. The script will not overwrite an existing `.def`.
+**If the auto-generated `.def` needs manual fixes**, edit the file `create_def_file.sh` reported (`tools/<ToolName>/<ToolName>-<Version>.def`) before re-running `apptainer_build.sh`. The script will not overwrite an existing `.def` for that tool.
+
+## `.def` File Naming
+
+A tool's `.def` filename carries its version or pinned commit, matching
+the `.sif` output: `tools/<ToolName>/<ToolName>-<Version>.def`, e.g.
+`tools/jaeger/jaeger_v1.26.2.def`, `tools/ViraLM/ViraLM-git-b7a6f4e.def`.
+`create_def_file.sh` names its output this way automatically — the exact
+filename isn't known until after Claude generates the `Version` label, so
+it writes to a temp file first and renames once that label is read back
+out (`extract_def_version`, `def_lib.sh`).
+
+Every script that needs to find a tool's `.def` (`apptainer_build.sh`,
+`batch_build.sh`) goes through `find_tool_def` (`def_lib.sh`) rather than
+assuming a fixed path — it tolerates both this versioned convention and
+the older bare `tools/<ToolName>/<ToolName>.def` some earlier tools still
+carry (unchanged, not backfilled). If more than one `.def` exists for a
+tool, `find_tool_def` refuses to guess which is current — every caller
+errors out and lists the candidates rather than silently picking one.
 
 ## Committing Changes
 
@@ -151,7 +169,7 @@ export APPTAINER_BINDPATH=""
 export APPTAINER_CACHEDIR="/share/brc/$USER/.apptainer/cache"   # never $HOME — see lesson 1
 export APPTAINER_TMPDIR="/share/brc/$USER/.apptainer/tmp"
 mkdir -p "$APPTAINER_CACHEDIR" "$APPTAINER_TMPDIR"
-apptainer build tools/<ToolName>/<ToolName>-<Version>.sif tools/<ToolName>/<ToolName>.def
+apptainer build tools/<ToolName>/<ToolName>-<Version>.sif tools/<ToolName>/<ToolName>-<Version>.def
 ```
 
 `APPTAINER_BINDPATH=""` is required — Hazel's Apptainer config sets a bind path that breaks builds.
@@ -170,7 +188,7 @@ Start from `template.def` — it documents all 5 install patterns with the decis
 
 | Script | Purpose |
 |--------|---------|
-| `create_def_file.sh <GitHubURL>` | Generates `tools/<ToolName>/<ToolName>.def` for the given repo (tool name derived from the URL) — see "How `.def` generation works" above. |
+| `create_def_file.sh <GitHubURL>` | Generates `tools/<ToolName>/<ToolName>-<Version>.def` for the given repo (tool name derived from the URL, version from the generated `Version` label) — see "How `.def` generation works" above and "`.def` File Naming" above. |
 | `fix_def_file.sh <DefPath> <LogTailFile> [SandboxDiagFile]` | Regenerates a `.def` that failed a real build, using the actual failure evidence — called automatically by `apptainer_build.sh`'s retry loop, not normally invoked directly. See "Automatic Retry on Build Failure" above. |
 | `create_repos_entry.sh <def_file> <output_path>` | Generates the container-mod metadata file (Description, Home Page, Programs) by parsing the `.def` directly — no Claude required, was never implicated in the old failures. |
 | `batch_build.sh <urls_file>` | Runs `apptainer_build.sh` once per GitHub URL in a list — see "Batch Builds" above. |
@@ -204,7 +222,7 @@ custom_container_module/
 │       └── smoketest.def     # tiny fixture used only by run_tests.sh
 └── tools/
     └── <ToolName>/
-        ├── <ToolName>.def        # Apptainer definition (source of truth)
+        ├── <ToolName>-<Version>.def  # Apptainer definition (source of truth)
         └── <ToolName>-<Version>.sif  # built image (not committed to git)
 ```
 

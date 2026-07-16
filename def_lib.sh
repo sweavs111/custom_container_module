@@ -3,6 +3,45 @@
 # "what makes a .def valid" logic lives in exactly one place instead of
 # drifting apart between initial generation and retry-fixing.
 
+# Extracts the Version label's value from a .def file — single source of
+# truth for both the .sif filename (apptainer_build.sh) and the .def
+# filename itself (create_def_file.sh, find_tool_def below). Empty if the
+# label is missing.
+extract_def_version() {
+    grep -m1 -iE '^[[:space:]]+Version[[:space:]]+' "$1" | awk '{print $NF}'
+}
+
+# Locates the .def file for a tool under tools/<tool>/, tolerating the
+# versioned-filename convention (tools/<tool>/<tool>-<Version>.def, e.g.
+# jaeger_v1.26.2.def, DeepVirFinder.1.0.def, ViraLM-git-b7a6f4e.def) as
+# well as the older bare tools/<tool>/<tool>.def — the exact versioned name
+# can't be predicted in advance since it's derived from a Version label
+# Claude hasn't generated yet, so every caller needs to look it up rather
+# than assume a fixed path.
+#
+# On a single match, prints its path on stdout and returns 0. On no match,
+# prints nothing and returns 1. On multiple matches (ambiguous — can't
+# guess which one is current), prints each candidate path on its own
+# stdout line and returns 2; the caller decides how to report/abort.
+find_tool_def() {
+    local tool="$1"
+    local canonical="tools/${tool}/${tool}.def"
+    if [[ -f "$canonical" ]]; then
+        printf '%s\n' "$canonical"
+        return 0
+    fi
+    local candidates=()
+    mapfile -t candidates < <(compgen -G "tools/${tool}/${tool}[-._]*.def" || true)
+    if [[ ${#candidates[@]} -eq 1 ]]; then
+        printf '%s\n' "${candidates[0]}"
+        return 0
+    elif [[ ${#candidates[@]} -gt 1 ]]; then
+        printf '%s\n' "${candidates[@]}"
+        return 2
+    fi
+    return 1
+}
+
 # Extracts the body of a %<section> block (exclusive of the header line),
 # stopping at the next line that starts with '%' or at EOF.
 _def_extract_section() {
@@ -129,7 +168,7 @@ check_def_invariants() {
     fi
 
     local version
-    version=$(grep -m1 -iE '^[[:space:]]+Version[[:space:]]+' "$file" | awk '{print $NF}')
+    version=$(extract_def_version "$file")
     if [[ -z "$version" || "$version" == *"<"* ]]; then
         reasons+=("Version label is empty or still a placeholder (found: '${version:-<empty>}')")
     fi
