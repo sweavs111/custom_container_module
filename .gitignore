@@ -13,3 +13,8 @@ container_build.log
 
 # Requested images list
 mery_container_request_6.18.26.txt
+
+# Slurm job logs (e.g. tools/<ToolName>/logs/, per-job .out/.err files)
+**/logs/
+*.out
+*.err
