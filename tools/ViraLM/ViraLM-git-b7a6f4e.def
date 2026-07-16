@@ -1,0 +1,84 @@
+Bootstrap: docker
+From: ubuntu:22.04
+
+%labels
+    Maintainer sdweave2@ncsu.edu
+    Source https://github.com/ChengPENG-wolf/ViraLM
+    Version git-b7a6f4e
+
+%help
+    ViraLM — virus identification from metagenomic data using a genome foundation language model
+
+    This container requires a GPU node and must be invoked with:
+        apptainer run --nv ViraLM.sif [options]
+
+    Usage:
+        apptainer run --nv ViraLM.sif --input INPUT_FA --output OUTPUT_PTH --database DATABASE_PATH [options]
+
+    Options:
+        --input INPUT_FA        Input file (FASTA format)
+        --output OUTPUT_PTH     Output directory path
+        --filename FILENAME     Custom name for output files (optional)
+        --database DATABASE     Path to the downloaded ViraLM model directory
+        --len LEN                Predict only for sequences >= len bp (default: 500)
+        --batch_size BATCH_SIZE  Batch size for prediction (default: 16)
+        --threshold THRESHOLD    Threshold for prediction (default: 0.5)
+        --force                  Force overwrite of the output directory if it exists
+
+    Note: the model directory referenced by --database is not bundled in this
+    image (it is a large external download via gdown, per the upstream README).
+    Download it separately and pass its path with --database.
+
+    Example:
+        apptainer run --nv ViraLM.sif --help
+
+%post -c /bin/bash
+    set -e
+    export DEBIAN_FRONTEND=noninteractive
+
+    # Hazel bind-mount points
+    mkdir -p /rs1 /share /home /usr/local/usrapps
+
+    # System packages
+    apt-get update -qq && \
+        apt-get install -y --no-install-recommends \
+            python3 \
+            python3-pip \
+            git \
+            ca-certificates && \
+        apt-get clean && \
+        rm -rf /var/lib/apt/lists/*
+
+    # Install ViraLM's Python dependencies, pinned to the versions specified
+    # in the upstream viralm.yaml conda environment file
+    pip3 install --no-cache-dir \
+        numpy==1.24.4 \
+        biopython==1.83 \
+        datasets==2.16.1 \
+        transformers==4.29.2
+
+    # torch is GPU-capable; pin the exact CUDA build matching upstream's
+    # pytorch-cuda=11.8 pin instead of a plain pip install
+    pip3 install --no-cache-dir torch==2.0.1 --index-url https://download.pytorch.org/whl/cu118
+
+    # Fetch ViraLM source at the exact commit pinned for this build
+    # (upstream has no tagged releases)
+    git clone https://github.com/ChengPENG-wolf/ViraLM.git /opt/ViraLM
+    cd /opt/ViraLM && git checkout b7a6f4ed7f6dd92ca6fe5dcf8d64905be65f7680
+
+    # ViraLM has no console-script entry point (flat viralm.py script) —
+    # create a bare-name wrapper for %runscript/%test
+    cat > /usr/local/bin/viralm << 'INNEREOF'
+#!/bin/bash
+exec python3 /opt/ViraLM/viralm.py "$@"
+INNEREOF
+    chmod +x /usr/local/bin/viralm
+
+%environment
+    export DEBIAN_FRONTEND=noninteractive
+
+%runscript
+    exec viralm "$@"
+
+%test
+    viralm --help

@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=viralm_gpu_verify
+#SBATCH --job-name=inherit_gpu_verify
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=2
@@ -8,13 +8,13 @@
 #SBATCH --qos=short_gpu
 #SBATCH --gres=gpu:a10:1
 #SBATCH --time=00:15:00
-#SBATCH --output=logs/viralm_gpu_verify.%j.out
-#SBATCH --error=logs/viralm_gpu_verify.%j.err
+#SBATCH --output=logs/inherit_gpu_verify.%j.out
+#SBATCH --error=logs/inherit_gpu_verify.%j.err
 
 set -euo pipefail
 
 # ---- Config -------------------------------------------------------------
-SIF="/rs1/shares/brc/admin/containers/custom_container_module/tools/ViraLM/ViraLM-git-b7a6f4e.sif"
+SIF="/rs1/shares/brc/admin/containers/custom_container_module/tools/INHERIT/INHERIT-5ea758c0.sif"
 
 [[ -f "$SIF" ]] || { echo "ERROR: sif not found: $SIF"; exit 1; }
 
@@ -47,7 +47,15 @@ if torch.cuda.is_available():
 "
 echo
 
-echo "=== apptainer run --nv: real ViraLM entrypoint (--help, no database needed) ==="
+echo "=== apptainer exec --nv: tensorflow GPU device list ==="
+apptainer exec --nv "$SIF" python3 -c "
+import tensorflow as tf
+print('tensorflow version:', tf.__version__)
+print('GPUs visible to tensorflow:', tf.config.list_physical_devices('GPU'))
+"
+echo
+
+echo "=== apptainer run --nv: real INHERIT entrypoint (--help, no pretrained models needed) ==="
 apptainer run --nv "$SIF" --help
 echo
 
