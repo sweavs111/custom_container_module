@@ -46,7 +46,8 @@ From: python:3.9-slim
     Example:
         apptainer run --nv INHERIT.sif --help
 
-%post
+%post -c /bin/bash
+    set -e
     export DEBIAN_FRONTEND=noninteractive
 
     # Hazel bind-mount points

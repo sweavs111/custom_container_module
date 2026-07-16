@@ -87,22 +87,48 @@ fi
 TOOL=$(derive_tool_name "$GITHUB_URL")
 
 ### --- Derived paths ---
-DEF="tools/${TOOL}/${TOOL}.def"
 TOOL_LOWER=$(echo "$TOOL" | tr '[:upper:]' '[:lower:]')
 REPOS_FILE="$(dirname "$CONTAINER_MOD")/repos/$TOOL_LOWER"
 
+# .def filenames follow the same tools/<Tool>/<Tool>-<Version>.def
+# convention as the .sif output below (create_def_file.sh names its output
+# after the Version label it generates) — so the exact filename can't be
+# known in advance of generation. find_tool_def (def_lib.sh) locates
+# whatever's there, tolerating both that convention and the older bare
+# tools/<Tool>/<Tool>.def some tools still carry.
+locate_def() {
+    local result rc=0
+    result=$(find_tool_def "$TOOL") || rc=$?
+    if [[ $rc -eq 2 ]]; then
+        echo "ERROR: multiple .def files found for ${TOOL} — ambiguous, remove or rename all but one:" >&2
+        local candidates=()
+        mapfile -t candidates <<< "$result"
+        printf '  %s\n' "${candidates[@]}" >&2
+        exit 1
+    fi
+    DEF="$result"
+}
+
+DEF=""
+locate_def
+
 ### --- Pre-flight: generate .def file if missing ---
-if [[ ! -f "$DEF" ]]; then
+if [[ -z "$DEF" ]]; then
     "$(dirname "$0")/create_def_file.sh" "$GITHUB_URL" || exit 1
+    locate_def
+    if [[ -z "$DEF" ]]; then
+        echo "ERROR: create_def_file.sh reported success but no .def file was found for ${TOOL}" >&2
+        exit 1
+    fi
     echo ""
     echo "A .def file was generated but NOT reviewed. Re-run after checking"
-    echo "tools/${TOOL}/${TOOL}.def, or Ctrl-C now to review first."
+    echo "$DEF, or Ctrl-C now to review first."
     read -r -p "Continue with build? [y/N] " REPLY
     [[ "$REPLY" =~ ^[Yy]$ ]] || exit 0
 fi
 
 ### --- Extract version from .def ---
-VERSION=$(grep -m1 -iE '^\s+Version\s+' "$DEF" | awk '{print $NF}')
+VERSION=$(extract_def_version "$DEF")
 if [[ -z "$VERSION" ]]; then
     echo "ERROR: could not extract Version label from $DEF" >&2
     exit 1

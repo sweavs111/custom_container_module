@@ -10,6 +10,7 @@ set -uo pipefail
 cd "$(dirname "$0")"
 
 source ./config.sh
+source ./def_lib.sh
 if [[ -z "${CONTAINER_MOD:-}" || ! -x "$CONTAINER_MOD" ]]; then
     echo "ERROR: CONTAINER_MOD not set or not executable — check config.sh" >&2
     exit 1
@@ -32,9 +33,8 @@ declare -a OK=() FAILED=() SKIPPED=()
 already_deployed() {
     local url="$1" tool def version
     tool=$(derive_tool_name "$url")
-    def="tools/${tool}/${tool}.def"
-    [[ -f "$def" ]] || return 1
-    version=$(grep -m1 -iE '^\s+Version\s+' "$def" | awk '{print $NF}')
+    def=$(find_tool_def "$tool") || return 1
+    version=$(extract_def_version "$def")
     [[ -n "$version" ]] || return 1
     [[ -f "${PUBLIC_IMAGEDIR}/${tool}-${version}.sif" ]]
 }

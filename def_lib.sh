@@ -3,6 +3,45 @@
 # "what makes a .def valid" logic lives in exactly one place instead of
 # drifting apart between initial generation and retry-fixing.
 
+# Extracts the Version label's value from a .def file — single source of
+# truth for both the .sif filename (apptainer_build.sh) and the .def
+# filename itself (create_def_file.sh, find_tool_def below). Empty if the
+# label is missing.
+extract_def_version() {
+    grep -m1 -iE '^[[:space:]]+Version[[:space:]]+' "$1" | awk '{print $NF}'
+}
+
+# Locates the .def file for a tool under tools/<tool>/, tolerating the
+# versioned-filename convention (tools/<tool>/<tool>-<Version>.def, e.g.
+# jaeger_v1.26.2.def, DeepVirFinder.1.0.def, ViraLM-git-b7a6f4e.def) as
+# well as the older bare tools/<tool>/<tool>.def — the exact versioned name
+# can't be predicted in advance since it's derived from a Version label
+# Claude hasn't generated yet, so every caller needs to look it up rather
+# than assume a fixed path.
+#
+# On a single match, prints its path on stdout and returns 0. On no match,
+# prints nothing and returns 1. On multiple matches (ambiguous — can't
+# guess which one is current), prints each candidate path on its own
+# stdout line and returns 2; the caller decides how to report/abort.
+find_tool_def() {
+    local tool="$1"
+    local canonical="tools/${tool}/${tool}.def"
+    if [[ -f "$canonical" ]]; then
+        printf '%s\n' "$canonical"
+        return 0
+    fi
+    local candidates=()
+    mapfile -t candidates < <(compgen -G "tools/${tool}/${tool}[-._]*.def" || true)
+    if [[ ${#candidates[@]} -eq 1 ]]; then
+        printf '%s\n' "${candidates[0]}"
+        return 0
+    elif [[ ${#candidates[@]} -gt 1 ]]; then
+        printf '%s\n' "${candidates[@]}"
+        return 2
+    fi
+    return 1
+}
+
 # Extracts the body of a %<section> block (exclusive of the header line),
 # stopping at the next line that starts with '%' or at EOF.
 _def_extract_section() {
@@ -129,7 +168,7 @@ check_def_invariants() {
     fi
 
     local version
-    version=$(grep -m1 -iE '^[[:space:]]+Version[[:space:]]+' "$file" | awk '{print $NF}')
+    version=$(extract_def_version "$file")
     if [[ -z "$version" || "$version" == *"<"* ]]; then
         reasons+=("Version label is empty or still a placeholder (found: '${version:-<empty>}')")
     fi
@@ -152,6 +191,36 @@ check_def_invariants() {
         printf '  - %s\n' "${reasons[@]}" >&2
         return 1
     fi
+    return 0
+}
+
+# Known GPU-framework package names. Deliberately a flat, fixed lookup list
+# (not a decision tree) — a tool either mentions one of these somewhere in
+# its already-gathered evidence or it doesn't; there is no judgment call.
+GPU_SIGNAL_TOKENS=(torch tensorflow jax jaxlib cupy onnxruntime-gpu mxnet paddlepaddle)
+
+# Greps concatenated evidence text (discovered imports, packaging file
+# content, README, PyPI summary, upstream def content — whatever the
+# caller has already gathered) for known GPU-framework package names.
+# Prints each matched token on its own line and returns 0 if any were
+# found, else prints nothing and returns 1. Word-boundary regex avoids
+# false positives like matching 'torch' inside 'torchlight'.
+detect_gpu_signals() {
+    local text="$*" tok
+    local matches=()
+    for tok in "${GPU_SIGNAL_TOKENS[@]}"; do
+        # Boundary excludes only alnum/underscore, NOT hyphen — several of
+        # these tokens (e.g. onnxruntime-gpu) are hyphenated themselves, and
+        # a hyphen-as-word-char boundary would block matching 'tensorflow'
+        # at the start of 'tensorflow-gpu'.
+        if echo "$text" | grep -qiE "(^|[^a-zA-Z0-9_])${tok}([^a-zA-Z0-9_]|$)"; then
+            matches+=("$tok")
+        fi
+    done
+    if (( ${#matches[@]} == 0 )); then
+        return 1
+    fi
+    printf '%s\n' "${matches[@]}"
     return 0
 }
 

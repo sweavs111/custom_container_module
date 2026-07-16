@@ -197,6 +197,30 @@ check_env_failure_result "SSL cert error NOT classified as environment" \
     "SSL: CERTIFICATE_VERIFY_FAILED: unable to get local issuer certificate" "not-env"
 
 echo
+echo "== detect_gpu_signals (def_lib.sh) =="
+
+check_gpu_signal_result() {
+    local desc="$1" text="$2" expect="$3" actual
+    if detect_gpu_signals "$text" >/dev/null 2>&1; then
+        actual="detected"
+    else
+        actual="not-detected"
+    fi
+    check "$desc" "$actual" "$expect"
+}
+
+check_gpu_signal_result "torch pin detected" \
+    "torch==2.1.0
+numpy==1.24.4" "detected"
+check_gpu_signal_result "tensorflow-gpu detected" \
+    "tensorflow-gpu==2.15.0" "detected"
+check_gpu_signal_result "plain CPU deps not detected" \
+    "numpy==1.24.4
+pandas==2.1.0" "not-detected"
+check_gpu_signal_result "word-boundary false positive avoided (torchlight)" \
+    "torchlight==0.3.2" "not-detected"
+
+echo
 echo "== retry loop (apptainer_build.sh) — mocked apptainer + fix_def_file.sh =="
 if ./tests/run_retry_loop_tests.sh; then
     PASS=$((PASS + 1))
@@ -208,36 +232,46 @@ echo
 if [[ "${1:-}" == "--no-build" ]]; then
     echo "== smoke build == skipped (--no-build)"
 else
-    echo "== smoke build (real apptainer build via apptainer_build.sh, DEPLOY=false) =="
-
     CONFIG_BACKUP=$(mktemp)
     cp config.sh "$CONFIG_BACKUP"
     restore_config() { cp "$CONFIG_BACKUP" config.sh; rm -f "$CONFIG_BACKUP"; }
     trap restore_config EXIT
 
-    sed -i 's|^GITHUB_URL=.*|GITHUB_URL="https://github.com/brc-smoketest/smoketest"|' config.sh
-    sed -i 's|^DEPLOY=.*|DEPLOY=false|' config.sh
+    # Runs apptainer_build.sh for real against a tiny fixture (isolated CWD
+    # so tools/, container_build.log, etc. land in a temp dir, never the
+    # real repo — but invoked via the real script's absolute path so it
+    # still sources the temporarily-patched real config.sh via its own
+    # dirname). Shared by the plain smoketest and the GPU-addendum-shaped
+    # gpu_smoketest fixture below — same build/verify shape, different def.
+    run_smoke_build() {
+        local tool="$1" fixture="$2" version="$3"
+        echo "== smoke build ($tool, real apptainer build via apptainer_build.sh, DEPLOY=false) =="
 
-    BUILD_TMP=$(mktemp -d)
-    mkdir -p "$BUILD_TMP/tools/smoketest"
-    cp tests/fixtures/smoketest.def "$BUILD_TMP/tools/smoketest/smoketest.def"
+        sed -i "s|^GITHUB_URL=.*|GITHUB_URL=\"https://github.com/brc-smoketest/$tool\"|" config.sh
+        sed -i 's|^DEPLOY=.*|DEPLOY=false|' config.sh
 
-    # cd into an isolated CWD so tools/, container_build.log, etc. land in
-    # BUILD_TMP, not the real repo — but invoke via the real script's
-    # absolute path so it still sources the (temporarily patched) real
-    # config.sh via its own dirname.
-    ( cd "$BUILD_TMP" && "$REPO_ROOT/apptainer_build.sh" )
-    BUILD_STATUS=$?
+        local build_tmp
+        build_tmp=$(mktemp -d)
+        mkdir -p "$build_tmp/tools/$tool"
+        cp "$fixture" "$build_tmp/tools/$tool/$tool.def"
 
-    if [[ $BUILD_STATUS -eq 0 && -f "$BUILD_TMP/tools/smoketest/smoketest-0.0.1.sif" ]]; then
-        echo "  ok   - apptainer_build.sh built smoketest-0.0.1.sif and exited 0"
-        PASS=$((PASS + 1))
-    else
-        echo "  FAIL - apptainer_build.sh smoke build (exit $BUILD_STATUS)"
-        FAIL=$((FAIL + 1))
-    fi
+        ( cd "$build_tmp" && "$REPO_ROOT/apptainer_build.sh" )
+        local status=$?
 
-    rm -rf "$BUILD_TMP"
+        if [[ $status -eq 0 && -f "$build_tmp/tools/$tool/$tool-$version.sif" ]]; then
+            echo "  ok   - apptainer_build.sh built $tool-$version.sif and exited 0"
+            PASS=$((PASS + 1))
+        else
+            echo "  FAIL - apptainer_build.sh smoke build for $tool (exit $status)"
+            FAIL=$((FAIL + 1))
+        fi
+
+        rm -rf "$build_tmp"
+    }
+
+    run_smoke_build "smoketest" "tests/fixtures/smoketest.def" "0.0.1"
+    run_smoke_build "gpu-smoketest" "tests/fixtures/gpu_smoketest.def" "0.0.1"
+
     restore_config
     trap - EXIT
 fi

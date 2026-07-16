@@ -4,7 +4,11 @@
 # with Claude.
 #
 # Usage:   create_def_file.sh <GitHubURL>
-# Creates: tools/<ToolName>/<ToolName>.def  (relative to CWD)
+# Creates: tools/<ToolName>/<ToolName>-<Version>.def  (relative to CWD) —
+#          the same tools/<Tool>/<Tool>-<Version> stem apptainer_build.sh
+#          uses for the built .sif, e.g. tools/ViraLM/ViraLM-git-b7a6f4e.def.
+#          <Version> comes from the Version label Claude generates, so the
+#          final filename isn't known until after generation.
 #
 # The GitHub URL is the sole input — nothing here ever searches by name to
 # find or pick a repo. Requiring the exact repo URL up front removes the
@@ -44,7 +48,6 @@ GITHUB_URL="${1%/}"
 TOOL=$(derive_tool_name "$GITHUB_URL")
 TOOL_LOWER=$(echo "$TOOL" | tr '[:upper:]' '[:lower:]')
 DEF_DIR="./tools/$TOOL"
-DEF_FILE="$DEF_DIR/$TOOL.def"
 TEMPLATE="$(dirname "$0")/template.def"
 CLAUDE=$(command -v claude 2>/dev/null || echo "$CLAUDE_BIN")
 
@@ -57,8 +60,15 @@ if [[ ! -x "$CLAUDE" ]]; then
     echo "ERROR: claude CLI not found" >&2
     exit 1
 fi
-if [[ -f "$DEF_FILE" ]]; then
-    echo "ERROR: $DEF_FILE already exists — remove it to regenerate" >&2
+EXISTING_DEF_RC=0
+EXISTING_DEF=$(find_tool_def "$TOOL") || EXISTING_DEF_RC=$?
+if [[ $EXISTING_DEF_RC -eq 0 ]]; then
+    echo "ERROR: $EXISTING_DEF already exists for $TOOL — remove it to regenerate" >&2
+    exit 1
+elif [[ $EXISTING_DEF_RC -eq 2 ]]; then
+    echo "ERROR: multiple .def files already exist for $TOOL — ambiguous, remove or rename all but one:" >&2
+    mapfile -t EXISTING_DEF_CANDIDATES <<< "$EXISTING_DEF"
+    printf '  %s\n' "${EXISTING_DEF_CANDIDATES[@]}" >&2
     exit 1
 fi
 
@@ -238,6 +248,23 @@ if [[ -n "${TREE_PATHS_FILE:-}" ]] && grep -qiE '(^|/)(setup\.py|pyproject\.toml
     HAS_PACKAGING=true
 fi
 
+# --- Fetch packaging file content (GPU-signal detection only) ---
+# The HAS_PACKAGING check above only confirms existence via the tree
+# listing — its content is otherwise never fetched. Pull just enough
+# (same 4000-char cap as the README fetch) to grep for GPU-framework
+# package names (see detect_gpu_signals, def_lib.sh); first file found in
+# this preference order wins.
+PACKAGING_CONTENT=""
+if [[ "$HAS_PACKAGING" == true && -n "${TREE_PATHS_FILE:-}" ]]; then
+    for pkgpat in 'requirements\.txt' 'setup\.py' 'pyproject\.toml' 'setup\.cfg'; do
+        PKG_PATH=$(grep -iE "(^|/)${pkgpat}\$" "$TREE_PATHS_FILE" | head -1 || true)
+        if [[ -n "$PKG_PATH" ]]; then
+            PACKAGING_CONTENT=$(curl -sf "https://raw.githubusercontent.com/$REPO_PATH/$DEFAULT_BRANCH/$PKG_PATH" 2>/dev/null | head -c 4000 || true)
+            [[ -n "$PACKAGING_CONTENT" ]] && break
+        fi
+    done
+fi
+
 # --- Import-based dependency discovery (Pattern 3) ---
 # Only when there's no PyPI release, no bioconda package, and no packaging
 # file — i.e. a "flat script" repo where the README's stated requirements
@@ -317,6 +344,21 @@ PYEOF
     fi
 fi
 
+# --- GPU-framework signal detection ---
+# Mechanical, not a judgment call: greps everything already gathered above
+# for known GPU-framework package names (see detect_gpu_signals, def_lib.sh).
+# Applies ON TOP of whichever install pattern (0-4) is chosen below — see
+# template.def's "GPU addendum" — never a separate branch of its own.
+GPU_SIGNALS=""
+GPU_EVIDENCE_TEXT="$DISCOVERED_DEPS
+$PACKAGING_CONTENT
+$GITHUB_README
+$PYPI_SUMMARY
+$UPSTREAM_DEF_CONTENT"
+if GPU_SIGNALS=$(detect_gpu_signals "$GPU_EVIDENCE_TEXT"); then
+    echo "  GPU-capable dependency detected: $(echo "$GPU_SIGNALS" | tr '\n' ' ')"
+fi
+
 # --- Assemble context ---
 CONTEXT=""
 if [[ -n "$UPSTREAM_DEF_CONTENT" ]]; then
@@ -367,6 +409,20 @@ This repo has no setup.py/pyproject.toml/requirements.txt, so these were
 extracted by parsing actual import statements in the repo's .py files —
 use this list, not whatever the README implies:
 $DISCOVERED_DEPS
+
+"
+fi
+if [[ -n "$GPU_SIGNALS" ]]; then
+    CONTEXT+="## AUTHORITATIVE: GPU-capable dependencies detected
+Detected package name(s): $(echo "$GPU_SIGNALS" | tr '\n' ' ')
+Apply the template's GPU addendum ON TOP of whichever install pattern
+(0-4) you pick — do NOT switch to an nvidia/cuda base image on this basis
+alone; only do that if an AUTHORITATIVE upstream def/Dockerfile above
+already uses one. Document the 'apptainer run --nv' requirement in %help,
+keep %test CPU-safe (the build host has no GPU), and if a CUDA-specific
+package pin (e.g. torch==X.Y.Z+cuXXX, or a custom --index-url) appears
+verbatim in the evidence above, use that exact pin instead of a plain pip
+install.
 
 "
 fi
@@ -425,6 +481,8 @@ Pick exactly ONE pattern (0-4) per the template's decision rules. In short:
 - Pattern 1 if a PyPI release was found above — use that exact package name/version.
 - Pattern 3 if source-derived dependencies were found above — use that exact list, not README guesses.
 - Otherwise Pattern 2 (GitHub source with packaging file).
+- If a GPU-capable dependencies block is present above, additionally apply
+  the template's GPU addendum on top of whichever pattern you picked.
 
 ## Template:
 $(cat "$TEMPLATE")
@@ -443,6 +501,26 @@ if ! finalize_generated_def "$GEN_TMP"; then
     exit 1
 fi
 
+# Name the output after the Version label Claude just generated, matching
+# the tools/<Tool>/<Tool>-<Version> stem apptainer_build.sh already uses
+# for the built .sif — the exact filename couldn't be known before this
+# point since it depends on Claude's generated content.
+GEN_VERSION=$(extract_def_version "$GEN_TMP")
+if [[ -z "$GEN_VERSION" || "$GEN_VERSION" == *"<"* ]]; then
+    echo "ERROR: generated .def has no valid Version label — cannot name output file" >&2
+    echo "---" >&2
+    cat "$GEN_TMP" >&2
+    echo "---" >&2
+    rmdir "$DEF_DIR" 2>/dev/null || true
+    exit 1
+fi
+if [[ "$GEN_VERSION" =~ [^A-Za-z0-9._-] ]]; then
+    echo "ERROR: generated Version label '$GEN_VERSION' contains characters unsafe for a filename" >&2
+    rmdir "$DEF_DIR" 2>/dev/null || true
+    exit 1
+fi
+
+DEF_FILE="$DEF_DIR/$TOOL-$GEN_VERSION.def"
 mv "$GEN_TMP" "$DEF_FILE"
 
 echo ""
