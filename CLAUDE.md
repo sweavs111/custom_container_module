@@ -59,7 +59,7 @@ and is never typed separately, so it can't drift from the URL it came from.
 - Appends the full build command trace (including retry attempts) to `container_build.log`.
 - If the retry loop modified the `.def` at all, prints a diff against the originally-reviewed version and pauses for confirmation before deploying — a build passing isn't sufficient evidence the fix was legitimate (lesson 6), so this is a second, narrower review gate than the one after initial generation.
 - If `DEPLOY=true` and the container-mod repos metadata file is missing, calls `create_repos_entry.sh` to generate it by parsing the `.def` directly.
-- Copies the SIF to `/usr/local/usrapps/brc/brc_modules/images/` and runs `container-mod pipe` to register the module, then removes the local `.sif`.
+- Copies the SIF to `/usr/local/usrapps/brc/brc_modules/images/` and runs `container-mod pipe` to register the module, then calls `patch_log_hook.sh` to append the module-load logging hook, then removes the local `.sif`.
 
 **If the auto-generated `.def` needs manual fixes**, edit the file `create_def_file.sh` reported (`tools/<ToolName>/<ToolName>-<Version>.def`) before re-running `apptainer_build.sh`. The script will not overwrite an existing `.def` for that tool.
 
@@ -191,6 +191,7 @@ Start from `template.def` — it documents all 5 install patterns with the decis
 | `create_def_file.sh <GitHubURL>` | Generates `tools/<ToolName>/<ToolName>-<Version>.def` for the given repo (tool name derived from the URL, version from the generated `Version` label) — see "How `.def` generation works" above and "`.def` File Naming" above. |
 | `fix_def_file.sh <DefPath> <LogTailFile> [SandboxDiagFile]` | Regenerates a `.def` that failed a real build, using the actual failure evidence — called automatically by `apptainer_build.sh`'s retry loop, not normally invoked directly. See "Automatic Retry on Build Failure" above. |
 | `create_repos_entry.sh <def_file> <output_path>` | Generates the container-mod metadata file (Description, Home Page, Programs) by parsing the `.def` directly — no Claude required, was never implicated in the old failures. |
+| `patch_log_hook.sh <tool_lower> <version>` | Appends the module-load logging TCL hook (timestamp, user, group, tool, version → `/usr/local/usrapps/brc/brc_modules/logs/module_loads.log`) to the deployed module file; idempotent. Called automatically right after a successful `container-mod pipe` deploy in `apptainer_build.sh` — this pipeline doesn't route through `container-mod_nf`'s own `PATCH_LOG_HOOK` stage, so without this call every module built here would silently ship without load logging (this is why `INHERIT`, `seeker`, `Jaeger`, and the other tools built through this repo were originally missing it). |
 | `batch_build.sh <urls_file>` | Runs `apptainer_build.sh` once per GitHub URL in a list — see "Batch Builds" above. |
 
 `def_lib.sh` is not invoked directly — it's a shared library sourced by
@@ -214,6 +215,7 @@ custom_container_module/
 ├── fix_def_file.sh           # regenerates a .def from real build-failure evidence (called by apptainer_build.sh's retry loop)
 ├── def_lib.sh                # shared prompt/postprocessing/invariant-check helpers, sourced by the three scripts above
 ├── create_repos_entry.sh     # auto-generates container-mod metadata by parsing the .def
+├── patch_log_hook.sh         # appends the module-load logging TCL hook after deploy
 ├── template.def              # canonical .def template with the 5 install patterns
 ├── container_build.log       # timestamped build+deploy audit trail (gitignored)
 ├── tests/
@@ -228,7 +230,7 @@ custom_container_module/
 
 ## Testing Changes to the Pipeline Itself
 
-`tests/run_tests.sh` regression-tests `config.sh`, `apptainer_build.sh`, `create_def_file.sh`, `create_repos_entry.sh`, and `def_lib.sh` (`check_def_invariants`, `is_environment_failure`) — run it after editing any of them:
+`tests/run_tests.sh` regression-tests `config.sh`, `apptainer_build.sh`, `create_def_file.sh`, `create_repos_entry.sh`, `patch_log_hook.sh`, and `def_lib.sh` (`check_def_invariants`, `is_environment_failure`) — run it after editing any of them:
 
 ```bash
 ./tests/run_tests.sh            # unit tests + a real smoke build via apptainer_build.sh

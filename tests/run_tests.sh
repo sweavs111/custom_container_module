@@ -81,6 +81,30 @@ check "programs"    "$(grep '^Programs:' "$PARSE_TMP/repos_out")"  "Programs: to
 rm -rf "$PARSE_TMP"
 
 echo
+echo "== patch_log_hook.sh =="
+HOOK_TMP=$(mktemp -d)
+mkdir -p "$HOOK_TMP/fixturetool"
+cat > "$HOOK_TMP/fixturetool/1.0" <<'EOF'
+#%Module1.0#####################################################################
+module-whatis "Name:        fixturetool"
+EOF
+
+MOD_DIR="$HOOK_TMP" ./patch_log_hook.sh "fixturetool" "1.0" > /dev/null
+check "hook appended"      "$(grep -c 'Log module load' "$HOOK_TMP/fixturetool/1.0")" "1"
+check "group field present" "$(grep -c '_group \$env(GROUP)' "$HOOK_TMP/fixturetool/1.0")" "1"
+check "puts line has 5 fields" "$(grep -c '\${_ts}|\${_user}|\${_group}|\${_tool}|\${_ver}' "$HOOK_TMP/fixturetool/1.0")" "1"
+
+MOD_DIR="$HOOK_TMP" ./patch_log_hook.sh "fixturetool" "1.0" > /dev/null
+check "idempotent — no duplicate hook on second run" "$(grep -c 'Log module load' "$HOOK_TMP/fixturetool/1.0")" "1"
+
+check "missing module file warns but does not fail" \
+    "$(MOD_DIR="$HOOK_TMP" ./patch_log_hook.sh "nonexistent" "9.9" 2>&1 1>/dev/null; echo "exit=$?")" \
+    "[WARN] patch_log_hook: module file not found: $HOOK_TMP/nonexistent/9.9
+exit=0"
+
+rm -rf "$HOOK_TMP"
+
+echo
 echo "== check_def_invariants (def_lib.sh) =="
 INVARIANT_TMP=$(mktemp -d)
 

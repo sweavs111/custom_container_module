@@ -237,6 +237,8 @@ if [[ "$DEPLOY" == true ]]; then
         exit $DEPLOY_EXIT
     fi
 
+    "$(dirname "$0")/patch_log_hook.sh" "$TOOL_LOWER" "$VERSION"
+
     rm "$SIF_FILE"
     echo "Removed local copy: $SIF_FILE"
 fi
