@@ -1,4 +1,15 @@
 #!/bin/bash
+#SBATCH --job-name=batch_build
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=4
+#SBATCH --mem=16G
+#SBATCH --partition=xfer
+#SBATCH --qos=xfer
+#SBATCH --time=12:00:00
+#SBATCH --output=logs/batch_build.%j.out
+#SBATCH --error=logs/batch_build.%j.err
+#
 # Runs apptainer_build.sh once per GitHub URL in a list (generate .def if missing -> review -> build -> deploy).
 #
 # Usage: ./batch_build.sh urls.txt
@@ -7,7 +18,11 @@
 # DEPLOY is forced true for every URL. For a DEPLOY=false dry run, use apptainer_build.sh directly.
 
 set -uo pipefail
-cd "$(dirname "$0")"
+# Under `sbatch`, $0 points at Slurm's spool copy of this script, not this
+# repo (see apptainer_build.sh's SCRIPT_DIR comment for the full
+# explanation) — prefer $SLURM_SUBMIT_DIR, falling back to dirname "$0"
+# for direct execution on a login node.
+cd "${SLURM_SUBMIT_DIR:-$(dirname "$0")}"
 
 source ./config.sh
 source ./def_lib.sh

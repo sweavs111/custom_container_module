@@ -1,8 +1,27 @@
 #!/bin/bash
+#SBATCH --job-name=apptainer_build
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=4
+#SBATCH --mem=16G
+#SBATCH --partition=xfer
+#SBATCH --qos=xfer
+#SBATCH --time=04:00:00
+#SBATCH --output=logs/apptainer_build.%j.out
+#SBATCH --error=logs/apptainer_build.%j.err
 
 ### --- Environment ---
-source "$(dirname "$0")/config.sh"
-source "$(dirname "$0")/def_lib.sh"
+# Under `sbatch`, Slurm copies this script into a spool directory and
+# executes that copy — $0 then points at the spool path
+# (/var/spool/slurmd/jobN/slurm_script), not this repo, so
+# $(dirname "$0") can't locate sibling scripts. $SLURM_SUBMIT_DIR is set
+# by Slurm to the directory `sbatch` was invoked from (and is already
+# where Slurm defaults the job's cwd to, independent of this) — prefer
+# it, falling back to $(dirname "$0") for direct execution (login node,
+# tests/run_retry_loop_tests.sh, neither of which run under Slurm).
+SCRIPT_DIR="${SLURM_SUBMIT_DIR:-$(dirname "$0")}"
+source "$SCRIPT_DIR/config.sh"
+source "$SCRIPT_DIR/def_lib.sh"
 if [[ -z "${CONTAINER_MOD:-}" || ! -x "$CONTAINER_MOD" ]]; then
     echo "ERROR: CONTAINER_MOD not set or not executable — check config.sh" >&2
     exit 1
@@ -114,7 +133,7 @@ locate_def
 
 ### --- Pre-flight: generate .def file if missing ---
 if [[ -z "$DEF" ]]; then
-    "$(dirname "$0")/create_def_file.sh" "$GITHUB_URL" || exit 1
+    "$SCRIPT_DIR/create_def_file.sh" "$GITHUB_URL" || exit 1
     locate_def
     if [[ -z "$DEF" ]]; then
         echo "ERROR: create_def_file.sh reported success but no .def file was found for ${TOOL}" >&2
@@ -138,7 +157,7 @@ SIF_FILE="${SIF}.sif"
 
 ### --- Pre-flight: generate container-mod metadata if missing ---
 if [[ "$DEPLOY" == true && ! -f "$REPOS_FILE" ]]; then
-    "$(dirname "$0")/create_repos_entry.sh" "$DEF" "$REPOS_FILE" || exit 1
+    "$SCRIPT_DIR/create_repos_entry.sh" "$DEF" "$REPOS_FILE" || exit 1
 fi
 
 ### --- Update log file ---
@@ -181,7 +200,7 @@ while true; do
     echo "$LOG_TAIL" > "$LOG_TAIL_FILE"
 
     echo "Asking Claude to fix the .def (attempt $ATTEMPT failure)..." | tee -a container_build.log
-    if ! "$(dirname "$0")/fix_def_file.sh" "$DEF" "$LOG_TAIL_FILE" "$SANDBOX_DIAG_FILE"; then
+    if ! "$SCRIPT_DIR/fix_def_file.sh" "$DEF" "$LOG_TAIL_FILE" "$SANDBOX_DIAG_FILE"; then
         echo "ERROR: fix_def_file.sh failed to produce a fix — giving up" | tee -a container_build.log
         rm -f "$LOG_TAIL_FILE" "$SANDBOX_DIAG_FILE"
         exit 1
@@ -237,7 +256,7 @@ if [[ "$DEPLOY" == true ]]; then
         exit $DEPLOY_EXIT
     fi
 
-    "$(dirname "$0")/patch_log_hook.sh" "$TOOL_LOWER" "$VERSION"
+    "$SCRIPT_DIR/patch_log_hook.sh" "$TOOL_LOWER" "$VERSION"
 
     rm "$SIF_FILE"
     echo "Removed local copy: $SIF_FILE"

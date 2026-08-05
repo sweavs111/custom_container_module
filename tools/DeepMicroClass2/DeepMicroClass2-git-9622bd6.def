@@ -1,0 +1,98 @@
+Bootstrap: docker
+From: ubuntu:22.04
+
+%labels
+    Maintainer sdweave2@ncsu.edu
+    Source https://github.com/aiguo-11/DeepMicroClass2
+    Version git-9622bd6
+
+%help
+    DeepMicroClass2 — deep learning based genome sequence classification
+    tool for metagenomic contig labeling (8-class taxonomic prediction:
+    arc, bac, chlor, euk, eukvir, mit, pls, prokvir) and abundance (TPM)
+    estimation from paired FASTQ reads.
+
+    This container bundles PyTorch (torch>=2.0). GPU acceleration is
+    detected and used automatically when a GPU is available, but the
+    driver is only exposed to the container at RUN time — you MUST invoke
+    it with `apptainer run --nv <image>.sif`, not a bare `apptainer run`,
+    to get GPU acceleration. It also runs correctly on CPU-only nodes
+    (just slower), so `--nv` is optional but recommended whenever a GPU
+    node is available.
+
+    Usage:
+        apptainer run --nv DeepMicroClass2-git-9622bd6.sif [options]
+
+    Options:
+        --contig PATH        Input contig FASTA (required)
+        --fastq R1 [R2]       Optional raw FASTQ read(s) for TPM estimation
+        --out_dir PATH        Output directory
+        --model {8class,300bp,high_precision}
+                              Model mode (default: 8-class)
+        --thresholds T1,...,T8
+                              Override the 8 class thresholds, in order:
+                              arc,bac,chlor,euk,eukvir,mit,pls,prokvir
+
+    Example:
+        apptainer run --nv DeepMicroClass2-git-9622bd6.sif \
+            --contig examples/contigs_8class.fasta --out_dir result
+
+%post -c /bin/bash
+    set -e
+    export DEBIAN_FRONTEND=noninteractive
+
+    # Hazel bind-mount points
+    mkdir -p /rs1 /share /home /usr/local/usrapps
+
+    # System packages
+    apt-get update -qq && \
+        apt-get install -y --no-install-recommends \
+            python3 \
+            python3-pip \
+            python3-dev \
+            build-essential \
+            git \
+            ca-certificates && \
+        apt-get clean && \
+        rm -rf /var/lib/apt/lists/*
+
+    # DeepMicroClass2 has no setup.py/pyproject.toml and no PyPI release —
+    # it's a flat collection of scripts (models.py, predict.py, utils.py,
+    # selftest.py) installed via its own requirements.txt. Pin to the
+    # exact commit reviewed for this build rather than floating on `main`.
+    git clone https://github.com/aiguo-11/DeepMicroClass2.git /opt/DeepMicroClass2
+    cd /opt/DeepMicroClass2
+    git checkout 9622bd6ca14d8b844c574e06d1ffc020d1052ca8
+
+    # requirements.txt (AUTHORITATIVE, fetched verbatim from the repo):
+    #   biopython>=1.80
+    #   numpy>=1.24
+    #   pandas>=2.0
+    #   pytorch-lightning>=2.0
+    #   torch>=2.0
+    #   torchmetrics>=1.0
+    #   scikit-learn>=1.0
+    #   pysam>=0.21.0
+    # No CUDA-specific wheel/index-url is pinned upstream, so a plain pip
+    # install is correct here — GPU acceleration comes from the host
+    # driver bound in at run time via `apptainer run --nv`, not from a
+    # baked-in CUDA base image (see %help).
+    pip3 install --no-cache-dir -r requirements.txt
+
+    # No console-script entry point ships with this repo — predict.py is
+    # invoked directly with `python predict.py ...`. Wrap it so %runscript
+    # can point at a single bare, PATH-resolvable command name.
+    cat > /usr/local/bin/deepmicroclass2 << 'INNEREOF'
+#!/bin/bash
+exec python3 /opt/DeepMicroClass2/predict.py "$@"
+INNEREOF
+    chmod +x /usr/local/bin/deepmicroclass2
+
+%environment
+    export DEBIAN_FRONTEND=noninteractive
+
+%runscript
+    exec deepmicroclass2 "$@"
+
+%test
+    deepmicroclass2 --help
