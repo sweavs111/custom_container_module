@@ -109,9 +109,27 @@ From: ubuntu:22.04
 #     --index-url), use that exact pin — a plain `pip install torch` can
 #     silently resolve to a CPU-only wheel depending on platform tags.
 #
-#   Out of scope for now: bioconda/Pattern 4 GPU variants (e.g. a
-#   cudatoolkit conda dependency) — no tool in this repo's history has
-#   needed that path yet, so there's nothing empirical to generalize from.
+#   - Pattern 4 (bioconda) specifically needs one more step the pip case
+#     doesn't: a pip wheel bundles its own CUDA runtime and is therefore a
+#     static artifact — building it on a GPU-less login node yields the
+#     exact same package a GPU node would get. conda-forge/bioconda
+#     GPU-capable packages (e.g. tensorflow) instead pick between a
+#     CPU-only and a CUDA-enabled BUILD at SOLVE time, gated by conda's
+#     `__cuda` virtual package, which reflects what the solving machine
+#     reports — not the runtime target. Solving on Hazel's GPU-less login
+#     nodes with no override silently picks the CPU-only build even when a
+#     CUDA-enabled build of the identical version exists in the same
+#     channel; `apptainer run --nv` at runtime cannot retroactively change
+#     which build got installed. Verified empirically against
+#     jaeger-bio=1.26.4 (see CLAUDE.md lesson 11): no override solved to
+#     tensorflow-base 2.21.0 cpu_py313h8dee54f_1 (pkgs/main, 192MB);
+#     CONDA_OVERRIDE_CUDA=12 solved the identical request to tensorflow-base
+#     2.21.0 cuda129py313h4cd0554_201 (pkgs/main, 608MB). Fix: export
+#     CONDA_OVERRIDE_CUDA=12 (or whatever CUDA major version matches
+#     Hazel's driver, if that ever changes) immediately before the `mamba
+#     create`/`mamba install` line in %post — a one-line environment
+#     variable, not a base-image change, consistent with the no-base-image-
+#     switch rule above.
 # ------------------------------------------------------------
 
 %labels

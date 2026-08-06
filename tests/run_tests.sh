@@ -12,7 +12,12 @@
 # tiny fixture image (tests/fixtures/smoketest.def, debian-slim-based) with
 # DEPLOY=false, so it needs `module load apptainer` + outbound internet
 # (login node only) but never touches container-mod or the repo's own
-# tools/ directory or container_build.log.
+# tools/ directory or container_build.log. The same non-no-build branch also
+# runs a real (dry-run only) conda solve to empirically verify the
+# CONDA_OVERRIDE_CUDA=12 Pattern-4 GPU rule (CLAUDE.md lesson 11) actually
+# flips the resolved tensorflow build variant, not just that a GPU-shaped
+# .def builds (see tests/fixtures/gpu_smoketest.def's own note on why it
+# deliberately doesn't install a real GPU framework).
 
 set -uo pipefail
 cd "$(dirname "$0")/.."
@@ -295,6 +300,60 @@ else
 
     run_smoke_build "smoketest" "tests/fixtures/smoketest.def" "0.0.1"
     run_smoke_build "gpu-smoketest" "tests/fixtures/gpu_smoketest.def" "0.0.1"
+
+    # Empirically verifies the Pattern-4 GPU rule in template.def / CLAUDE.md
+    # lesson 11 — not just that a GPU-flavored .def *builds* (gpu_smoketest
+    # above deliberately skips installing a real GPU framework so that stays
+    # fast), but that CONDA_OVERRIDE_CUDA=12 actually flips which tensorflow
+    # BUILD conda-forge/pkgs-main's solver picks on this GPU-less host.
+    # Dry-run only (--dry-run): resolves metadata, doesn't download the
+    # ~200-600MB packages themselves, so this stays fast despite needing a
+    # real solve against the real channels. Network + apptainer required,
+    # same as the smoke builds above.
+    #
+    # Fragile by nature: depends on conda-forge/pkgs-main's current build
+    # tags (cpu_* vs cuda<major><minor>*) for tensorflow-base at this
+    # version constraint. If this starts failing, don't assume the rule
+    # itself is wrong — re-verify with a manual dry-run solve first (see
+    # CLAUDE.md lesson 11 for the exact commands used to establish it) and
+    # update the version pin/expected tag here if conda-forge's own
+    # packaging convention has moved on.
+    echo "== CONDA_OVERRIDE_CUDA=12 flips a Pattern-4 GPU-package solve (CLAUDE.md lesson 11) =="
+
+    export APPTAINER_BINDPATH=""
+    export APPTAINER_CACHEDIR APPTAINER_TMPDIR
+    mkdir -p "$APPTAINER_CACHEDIR" "$APPTAINER_TMPDIR"
+
+    solve_tensorflow_build_tag() {
+        local override="$1" extra_env=()
+        [[ -n "$override" ]] && extra_env=(--env "CONDA_OVERRIDE_CUDA=$override")
+        apptainer exec --cleanenv --writable-tmpfs \
+            --env TMPDIR=/tmp --env CONDA_PKGS_DIRS=/tmp/pkgs \
+            "${extra_env[@]}" \
+            docker://condaforge/miniforge3:24.3.0-0 bash -c '
+                mkdir -p /tmp/pkgs
+                mamba create -n test -c conda-forge -c bioconda "python>=3.11,<3.14" "tensorflow>=2.21" --dry-run -y
+            ' 2>/dev/null | grep -m1 -E '^\s*\+\s*tensorflow-base\s'
+    }
+
+    classify_build_tag() {
+        local line="$1"
+        if echo "$line" | grep -qiE '\bcuda[0-9]'; then
+            echo "cuda-build"
+        elif echo "$line" | grep -qiE '\bcpu_'; then
+            echo "cpu-build"
+        else
+            echo "unknown ($line)"
+        fi
+    }
+
+    NO_OVERRIDE_LINE=$(solve_tensorflow_build_tag "")
+    check "no override — solves to CPU-only build on this GPU-less host" \
+        "$(classify_build_tag "$NO_OVERRIDE_LINE")" "cpu-build"
+
+    OVERRIDE_LINE=$(solve_tensorflow_build_tag "12")
+    check "CONDA_OVERRIDE_CUDA=12 — solves to CUDA-enabled build" \
+        "$(classify_build_tag "$OVERRIDE_LINE")" "cuda-build"
 
     restore_config
     trap - EXIT
