@@ -1,0 +1,167 @@
+Bootstrap: docker
+From: ubuntu:22.04
+
+%labels
+    Maintainer sdweave2@ncsu.edu
+    Source https://github.com/ZhaoXM-Lab/VirRep
+    Version git-7c7b4b8
+
+%help
+    VirRep — a hybrid language representation learning framework (context-aware
+    + evolution-aware encoders) for identifying viral sequences in human gut
+    metagenomes.
+
+    This container was built from ZhaoXM-Lab/VirRep @ commit 7c7b4b8e43054a
+    6d4da0b7a7d893c4f81441862e (no tagged release exists upstream).
+
+    GPU: VirRep is torch-based and GPU-capable. This container ships a
+    pip-installed PyTorch wheel built against CUDA 11.8 (matching the CUDA
+    version upstream's own README documents: `pytorch-cuda=11.8`), with its
+    own bundled CUDA 11.8 runtime — it does NOT require an nvidia/cuda base
+    image. To actually use a GPU at runtime you MUST invoke it with:
+
+        apptainer run --nv VirRep-git-7c7b4b8.sif [options]
+
+    Without --nv (or on a login/CPU node) it runs correctly but on CPU only.
+
+    Usage:
+        apptainer run --nv VirRep-git-7c7b4b8.sif -i <input.fasta> -o <outdir> [options]
+
+    Key options (see `apptainer run VirRep-git-7c7b4b8.sif -h` for the full list):
+        -i INPUT_FILE, --input-file INPUT_FILE
+                              Input fasta file of sequences to score.
+        -o OUTPUT_DIR, --output-dir OUTPUT_DIR
+                              Output directory for predictions.
+        --label LABEL         Prefix to append to output filenames.
+        -m MODEL, --model MODEL
+                              Model path. Default 'model/VirRep.pth' is resolved
+                              relative to the current working directory — the
+                              image ships the pretrained model at
+                              /opt/VirRep/src/model/VirRep.pth, so pass
+                              -m /opt/VirRep/src/model/VirRep.pth explicitly
+                              unless you cd into /opt/VirRep/src first.
+        --use-amp             Use automatic mixed precision (GPU only).
+        --conservative         Apply conservative high-confidence-only settings.
+        -l MINLEN, --minlen MINLEN
+                              Minimum sequence length to predict (>= 1000, default 1000).
+        --provirus-off         Skip the iterative segment extension procedure.
+        -w WORKERS             Number of worker processes.
+
+    Example:
+        apptainer run --nv VirRep-git-7c7b4b8.sif \
+            -i test/test.fasta -o vr_out -w 2 --use-amp \
+            -m /opt/VirRep/src/model/VirRep.pth \
+            --min-score 1000-5000:0.9,5001-10000:0.8,10001-Inf:0.7
+
+%post -c /bin/bash
+    set -e
+    # Header is exactly '%post -c /bin/bash' (Apptainer's %post ignores any
+    # shebang line in the body; without -c /bin/bash it always runs under
+    # dash, which has no 'set -o pipefail'). 'set -e' first so a failed
+    # install step aborts the build instead of silently continuing with a
+    # broken image (CLAUDE.md lesson 6).
+    export DEBIAN_FRONTEND=noninteractive
+
+    # Hazel bind-mount points
+    mkdir -p /rs1 /share /home /usr/local/usrapps
+
+    # System packages
+    apt-get update -qq && \
+        apt-get install -y --no-install-recommends \
+            python3 \
+            python3-pip \
+            git \
+            ca-certificates && \
+        apt-get clean && \
+        rm -rf /var/lib/apt/lists/*
+
+    # VirRep ships no setup.py/pyproject.toml/requirements.txt (Pattern 3) —
+    # dependency list below is the AUTHORITATIVE set discovered by parsing
+    # real `import`/`from` statements in the repo's .py files, not guessed
+    # from the README. 'Bio' is the import name for the PyPI package
+    # 'biopython'. torch is installed separately below with an explicit
+    # CUDA pin.
+    pip3 install --no-cache-dir \
+        biopython \
+        numpy \
+        packaging \
+        pandas \
+        tqdm
+
+    # PREVIOUS BUILD FAILURE: this earlier version of the .def did a plain
+    # 'pip3 install torch' with no index-url. On a bare 'pip install torch',
+    # pip resolves the newest default wheel, which as of this generation is
+    # built against CUDA 13 and pulls in an enormous, brand-new set of
+    # nvidia-*-cu13 runtime packages (cublas 423MB, cudnn ~600MB+, cusolver
+    # 200MB, cufft 214MB, cusparse 146MB, plus cu13-only additions that
+    # don't even exist in older installs — nvidia-nvshmem-cu13,
+    # nvidia-cusparselt-cu13, nvidia-cufile — on top of the usual curand,
+    # nvjitlink, nvtx, nccl, cuda-nvrtc/runtime/cupti packages). %post and
+    # %test both completed successfully against that install — the failure
+    # was 'apptainer' getting SIGKILL'd (OOM) while running mksquashfs to
+    # package the resulting multi-gigabyte rootfs into the final .sif, i.e.
+    # the build host ran out of memory compressing an image that large, not
+    # a content/logic bug in %post.
+    #
+    # FIX: pin the CUDA runtime torch is built against to 11.8 instead of
+    # letting pip pick the newest default. This is not an invented pin —
+    # it is the exact CUDA version the README itself specifies in its own
+    # example install command ('conda install pytorch torchvision
+    # torchaudio pytorch-cuda=11.8 -c pytorch -c nvidia'); pip's equivalent
+    # mechanism for selecting a CUDA build is the '--index-url' wheel
+    # index rather than a conda package pin. This both (a) matches
+    # upstream's own documented CUDA target instead of guessing, and (b)
+    # meaningfully shrinks the installed footprint versus the newest cu13
+    # stack, which is the direct fix for the mksquashfs OOM above. As with
+    # the plain-pip case, this wheel bundles its own CUDA 11.8 runtime — no
+    # nvidia/cuda base image or CUDA_OVERRIDE is needed (that fix is only
+    # required for Pattern 4/bioconda solves, see CLAUDE.md lessons 11-12).
+    # PyPI's cu118 wheel index still requires a GPU with a driver new
+    # enough to run CUDA 11.8 workloads and falls back to CPU automatically
+    # when no GPU is visible (e.g. during this build, and on a login node).
+    pip3 install --no-cache-dir torch \
+        --index-url https://download.pytorch.org/whl/cu118
+
+    # Fetch source and pin to the exact commit (no tagged release exists
+    # upstream as of generation time). A prior version of this .def did a
+    # full 'git clone' + 'git checkout <sha>', which pulls the ENTIRE repo
+    # history (every revision of every file, including any earlier copies
+    # of the shipped pretrained model checkpoint) into the image on top of
+    # the working tree we actually need. Fetch only the single pinned
+    # commit instead — GitHub supports fetching an arbitrary commit SHA
+    # directly over its smart-HTTP protocol — matching template.def's own
+    # Pattern-3 guidance to use a bounded '--depth 1' clone (a plain
+    # '--branch <tag>' shallow clone isn't usable here since upstream has
+    # no tag, only a bare SHA). Drop .git entirely once checked out; none
+    # of it is needed at runtime.
+    mkdir -p /opt/VirRep
+    cd /opt/VirRep
+    git init -q
+    git remote add origin https://github.com/ZhaoXM-Lab/VirRep.git
+    git fetch --depth 1 origin 7c7b4b8e43054a6d4da0b7a7d893c4f81441862e
+    git checkout -q FETCH_HEAD
+    rm -rf /opt/VirRep/.git
+
+    # No console-script entry point ships with this repo (flat script under
+    # src/) — create a bare-name wrapper so %runscript/%test and
+    # container-mod's Programs parsing get a single resolvable executable.
+    cat > /usr/local/bin/virrep << 'INNEREOF'
+#!/bin/bash
+exec python3 /opt/VirRep/src/VirRep.py "$@"
+INNEREOF
+    chmod +x /usr/local/bin/virrep
+
+%environment
+    export DEBIAN_FRONTEND=noninteractive
+    export PYTHONUNBUFFERED=1
+
+%runscript
+    exec virrep "$@"
+
+%test
+    # VirRep.py uses Python's argparse; -h/--help is argparse's own built-in
+    # help action (parser.exit(), exit code 0) — the script's one custom
+    # sys.exit() path only fires when NO arguments at all are given, not on
+    # -h, so --help's normal exit-0 behavior is unaffected here (verified
+    # against src/VirRep.py; CLAUDE.md lesson 8 caveat does not apply).
+    virrep --help
