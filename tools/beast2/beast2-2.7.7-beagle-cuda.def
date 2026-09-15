@@ -1,0 +1,222 @@
+Bootstrap: docker
+# --- Base image choice: nvidia/cuda:12.9.2-devel-ubuntu22.04 -----------------
+# devel (not runtime) is required because BEAGLE is compiled from source here
+# against the CUDA headers/libs (nvcc, libcuda stubs, etc) — see %post.
+#
+# Why 12.9.2 and NOT the cluster's new default (CUDA 13.2, per Hazel's current
+# login banner: "CUDA version has been updated to 13.2 - older versions
+# running on updated GPUs are exhibiting issues..."):
+#   - CUDA 13 dropped support for Maxwell/Pascal/Volta outright — its minimum
+#     supported compute capability is 7.5 (Turing). Hazel's own GPU fleet
+#     (checked via `sinfo`) still has live, schedulable Pascal nodes: gpu01
+#     (gtx_1080, sm_61), gpu03/gpu04 (p100, sm_60). A CUDA-13-built BEAGLE
+#     could not even target those, let alone run on them — nvcc would refuse
+#     to emit code for a compute capability below its new floor.
+#   - The banner's warning is about jobs using an OLD CUDA *module* on the
+#     bare host now hitting the recently-bumped driver — it's not a statement
+#     that every CUDA runtime below 13.2 is broken. Apptainer `--nv` only
+#     shares the host DRIVER; the CUDA toolkit/runtime is fully bundled in
+#     this image, so host-side `module load cuda` version drift doesn't apply
+#     here the way it would to a bare-metal job.
+#   - Verified empirically: gpu03 (Tesla P100) reports driver 580.126.20 via
+#     `nvidia-smi` (checked directly, 2026-09-14) — comfortably new enough for
+#     CUDA 12.9's driver-compatibility floor (NVIDIA drivers are backward
+#     compatible with older CUDA runtimes within the same major driver
+#     branch), while also still supporting Pascal.
+#   - BEAGLE's own CUDA kernel build (libhmsbeagle/GPU/kernels/
+#     make_cuda_kernels.sh) compiles kernels to PTX only (`nvcc -ptx`, no
+#     explicit -arch/-gencode), which the CUDA driver JIT-compiles to
+#     whatever GPU is actually present at runtime. One build this way is
+#     forward-compatible across Hazel's whole fleet (Pascal through Hopper)
+#     as long as the toolkit's default virtual architecture floor is <= sm_60
+#     — true for 12.x, NOT guaranteed once the toolkit itself can no longer
+#     target Pascal at all (13.x). This has only been checked by reading
+#     BEAGLE's build scripts, not by running real GPU inference on multiple
+#     architectures — see the %test note below and CLAUDE.md lesson 12's
+#     standing caution that build+%test passing is not sufficient proof for
+#     GPU correctness.
+#
+# If Hazel's Pascal-class nodes (gpu01/03/04) are retired, or BRC's BEAST2
+# users are only ever expected to land on Turing-or-newer hardware, this
+# tradeoff should be revisited toward the cluster's new 13.2 default instead.
+From: nvidia/cuda:12.9.2-devel-ubuntu22.04
+
+%labels
+    Maintainer sdweave2@ncsu.edu
+    Source https://github.com/CompEvol/beast2
+    Version 2.7.7
+    BeagleLib https://github.com/beagle-dev/beagle-lib
+
+%help
+    BEAST2 v2.7.7 linked against a BEAGLE build compiled with CUDA
+    (BUILD_CUDA=ON, BUILD_OPENCL=OFF) for GPU-accelerated likelihood
+    computation.
+
+    This container requires a GPU node and must be invoked with:
+        apptainer run --nv beast2.sif [options] <input.xml>
+
+    Usage:
+        apptainer run --nv beast2.sif [options] <input.xml>
+
+    Common options (see `beast -help` for the full list):
+        -threads <N>      Number of computational threads to use
+        -seed <N>         Random number seed
+        -overwrite        Overwrite existing log files
+        -resume           Resume an interrupted run
+        -beagle_GPU       Prefer a GPU BEAGLE resource (since this build has
+                           BUILD_OPENCL=OFF, the only GPU resource BEAGLE can
+                           offer is CUDA, so -beagle_GPU alone selects it -
+                           there is no separate -beagle_cuda flag in BEAST2's
+                           own CLI; verified against `beast -help`'s actual
+                           usage output after an earlier draft of this file
+                           wrongly documented one)
+        -beagle_info      List available BEAGLE resources and exit
+
+    Verify GPU/BEAGLE-CUDA are visible inside the container:
+        apptainer exec --nv beast2.sif beast -beagle_info
+        apptainer exec --nv beast2.sif nvidia-smi
+
+    Example:
+        apptainer run --nv beast2.sif -beagle_GPU my_analysis.xml
+
+%post -c /bin/bash
+    set -e
+    set -o pipefail
+    export DEBIAN_FRONTEND=noninteractive
+    export BEAST_VERSION=2.7.7
+    export BEAGLE_LIB_REF=master   # pin to a tag/commit if you want full reproducibility
+
+    # Hazel bind-mount points
+    mkdir -p /rs1 /share /home /usr/local/usrapps
+
+    echo "=== Installing build dependencies ==="
+    apt-get update
+    apt-get install -y --no-install-recommends \
+        build-essential \
+        cmake \
+        autoconf \
+        automake \
+        libtool \
+        git \
+        pkg-config \
+        wget \
+        ca-certificates \
+        openjdk-17-jdk \
+        libatlas-base-dev
+
+    # ---- Resolve JAVA_HOME for CMake's FindJNI ----
+    # BUILD_JNI=ON requires CMake's FindJNI module to locate jni.h and
+    # libjvm.so/libawt.so, and FindJNI looks for those primarily via the
+    # JAVA_HOME environment variable. Resolve it dynamically from javac's
+    # real path (robust to point-release directory name changes) rather than
+    # hardcoding /usr/lib/jvm/java-17-openjdk-amd64, and verify jni.h is
+    # actually there before trusting it (same fail-loud pattern as the
+    # libhmsbeagle-cuda.so check below) instead of assuming FindJNI will
+    # succeed just because JAVA_HOME is now non-empty.
+    export JAVA_HOME="$(dirname "$(dirname "$(readlink -f "$(command -v javac)")")")"
+    echo "Resolved JAVA_HOME=${JAVA_HOME}"
+    test -f "${JAVA_HOME}/include/jni.h" || \
+        (echo "ERROR: jni.h not found under ${JAVA_HOME}/include - JDK headers missing" && exit 1)
+
+    # ---- Build BEAGLE with CUDA ----
+    echo "=== Cloning and building beagle-lib (CUDA=ON, OpenCL=OFF) ==="
+    cd /usr/local/src
+    git clone --depth=1 --branch "${BEAGLE_LIB_REF}" https://github.com/beagle-dev/beagle-lib.git || \
+        git clone --depth=1 https://github.com/beagle-dev/beagle-lib.git
+    cd beagle-lib
+
+    # ---- Portability fix: beagle-lib's own CMakeLists.txt unconditionally
+    # sets BEAGLE_OPTIMIZE_FOR_NATIVE_ARCH=true (a plain `set()`, not an
+    # `option()`/CACHE var - passing -DBEAGLE_OPTIMIZE_FOR_NATIVE_ARCH=OFF
+    # on the cmake command line is silently shadowed by that line and does
+    # NOT disable it), which appends `-march=native` to CMAKE_CXX_FLAGS
+    # project-wide. Since this container is built here on a login node
+    # (Cascade Lake, AVX-512-capable), that baked AVX-512 codegen into
+    # libhmsbeagle-cuda.so - including into plain host-side utility code
+    # with no intentional vectorization (cuda_device::GPUInterface::
+    # GetDeviceDescription, which just formats a device-memory-size string).
+    # Verified empirically: a real build with this native-arch behavior
+    # left in crashed instantly with SIGILL (ILL_ILLOPN) on gpu03 (Tesla
+    # P100, Broadwell CPU) on the very first `beast -beagle_info` call -
+    # objdump on the crashing offset showed an EVEX-encoded (`62 f1 ...`)
+    # `vcvtusi2sdq` instruction, which is AVX-512-only. Confirmed via
+    # `sinfo`'s node feature flags that gpu03/gpu04 (the only P100 nodes)
+    # are the sole GPU nodes in Hazel's whole fleet without avx512 (every
+    # other gpu0x/gpu1x node - Skylake or Ice Lake - has it), but all of
+    # them, P100 nodes included, do have avx2. Patching the CMakeLists.txt
+    # to flip that line to `false` (sed, since the -D override doesn't
+    # work) and then pinning our own explicit, portable baseline instead
+    # fixes this everywhere without weakening it below what the actual
+    # fleet floor supports: x86-64-v3 (SSE4.2/AVX/AVX2/FMA/BMI2, no
+    # AVX-512) matches Broadwell exactly, so nothing is lost on the newer
+    # Skylake/Ice Lake nodes either - AVX-512 CPUs run x86-64-v3 code
+    # identically, and this is a one-off device-query call, not a hot
+    # likelihood-computation loop, so there's no measurable perf cost.
+    sed -i 's/set(BEAGLE_OPTIMIZE_FOR_NATIVE_ARCH true)/set(BEAGLE_OPTIMIZE_FOR_NATIVE_ARCH false)/' CMakeLists.txt
+    grep -q 'BEAGLE_OPTIMIZE_FOR_NATIVE_ARCH false' CMakeLists.txt || \
+        (echo "ERROR: failed to patch out beagle-lib's -march=native (CMakeLists.txt layout changed upstream - re-check line 17)" && exit 1)
+
+    mkdir build && cd build
+    cmake -DCMAKE_INSTALL_PREFIX:PATH=/usr/local \
+          -DBUILD_CUDA=ON \
+          -DBUILD_OPENCL=OFF \
+          -DBUILD_JNI=ON \
+          -DJAVA_HOME="${JAVA_HOME}" \
+          -DCMAKE_CXX_FLAGS="-march=x86-64-v3" \
+          -DCMAKE_C_FLAGS="-march=x86-64-v3" \
+          ..
+    make -j"$(nproc)"
+    make install
+    ldconfig
+
+    echo "=== Verifying CUDA BEAGLE library was built ==="
+    ls -l /usr/local/lib/ | grep -i beagle
+    test -f /usr/local/lib/libhmsbeagle-cuda.so || \
+        (echo "ERROR: libhmsbeagle-cuda.so was not built!" && exit 1)
+    test -f /usr/local/lib/libhmsbeagle-jni.so || \
+        (echo "ERROR: libhmsbeagle-jni.so was not built - BEAST2 cannot load BEAGLE via JNI!" && exit 1)
+
+    # ---- Install BEAST2 ----
+    # Root cause of the original build failure: the v2.7.7 GitHub release
+    # ships its Linux tarball as "BEAST.v2.7.7.Linux.x86.tgz" (there's also a
+    # separate "...Linux.aarch64.tgz" asset) — the old undifferentiated
+    # "BEAST.v<ver>.Linux.tgz" name used by earlier releases no longer
+    # exists as of this version. wget hit a 404 (exit code 8, "server issued
+    # an error response"), which surfaced as a bare %post exit status 255.
+    # Verified directly against the v2.7.7 GitHub Releases API asset list.
+    echo "=== Downloading BEAST2 v${BEAST_VERSION} ==="
+    # Extracting while already cd'd into /usr/local means the tarball's own
+    # top-level "beast/" entry lands directly at /usr/local/beast — a
+    # subsequent 'mv beast /usr/local/beast' is therefore a no-op that moves
+    # a directory into itself ("cannot move 'beast' to a subdirectory of
+    # itself"), which is what build attempt 3 actually hit. No mv needed.
+    cd /usr/local
+    wget --quiet "https://github.com/CompEvol/beast2/releases/download/v${BEAST_VERSION}/BEAST.v${BEAST_VERSION}.Linux.x86.tgz"
+    tar -xzf "BEAST.v${BEAST_VERSION}.Linux.x86.tgz"
+    rm "BEAST.v${BEAST_VERSION}.Linux.x86.tgz"
+    ln -sf /usr/local/beast/bin/beast /usr/local/bin/beast
+    ln -sf /usr/local/beast/bin/beauti /usr/local/bin/beauti
+
+    # ---- Cleanup ----
+    apt-get clean
+    rm -rf /var/lib/apt/lists/* /usr/local/src/beagle-lib
+
+%environment
+    export DEBIAN_FRONTEND=noninteractive
+    export PATH=/usr/local/beast/bin:/usr/local/bin:$PATH
+    export LD_LIBRARY_PATH=/usr/local/lib:$LD_LIBRARY_PATH
+    export BEAGLE_ORDER=1
+
+%runscript
+    exec beast "$@"
+
+%test
+    # beast -version's exit code isn't trustworthy across versions (CLAUDE.md
+    # lesson 8) — verify on output content instead. Chained with `&&` (not
+    # `|| true`) so a missing CUDA BEAGLE lib or a broken beast install both
+    # actually fail this test rather than being silently swallowed; no real
+    # real -beagle_GPU invocation happens here since the build host has no
+    # GPU attached (see the base-image note above — this only proves the
+    # binaries exist and load, not that GPU inference works).
+    test -f /usr/local/lib/libhmsbeagle-cuda.so && \
+        beast -version 2>&1 | grep -qi "beast"
