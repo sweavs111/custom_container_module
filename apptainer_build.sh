@@ -242,9 +242,17 @@ if [[ "$DEPLOY" == true ]]; then
 
     # cp and container-mod are chained with && so a failed cp short-circuits
     # (and is reflected in $?) instead of silently registering a module for
-    # a .sif that was never copied.
+    # a .sif that was never copied. The explicit chmod 644 right after cp
+    # guards against the deployed image landing world-unreadable — cp
+    # without --preserve=mode applies the deploying process's own umask to
+    # the source file's mode, so a stricter-than-usual umask (or a .sif
+    # that was itself created with unusually tight permissions) can produce
+    # an image other users on the cluster can't read, without any error —
+    # 644 (owner read/write, everyone else read-only) is the convention
+    # every other image in PUBLIC_IMAGEDIR already uses.
     do_deploy() {
         cp "$SIF_FILE" "$SIF_DEST" && \
+            chmod 644 "$SIF_DEST" && \
             "$CONTAINER_MOD" pipe -t --profile "$CONTAINER_MOD_PROFILE" --update "$SIF_DEST" \
                 < <(printf '%s\n%s\n' "$TOOL_LOWER" "$VERSION")
     }
@@ -254,6 +262,16 @@ if [[ "$DEPLOY" == true ]]; then
     if [[ $DEPLOY_EXIT -ne 0 ]]; then
         echo "ERROR: container-mod failed (exit $DEPLOY_EXIT) — local .sif kept at $SIF_FILE" | tee -a container_build.log
         exit $DEPLOY_EXIT
+    fi
+
+    # Re-check after container-mod has run, in case it re-copied or
+    # otherwise touched the file itself — don't just trust the chmod above
+    # still holds. Fail loudly rather than silently leaving a deployed
+    # image other users on the cluster can't read.
+    DEPLOYED_MODE=$(stat -c '%a' "$SIF_DEST")
+    if [[ "$DEPLOYED_MODE" != "644" ]]; then
+        echo "WARNING: deployed image $SIF_DEST has mode $DEPLOYED_MODE, not the expected 644 (world-readable) — fixing." | tee -a container_build.log
+        chmod 644 "$SIF_DEST" || { echo "ERROR: chmod 644 failed on $SIF_DEST" | tee -a container_build.log; exit 1; }
     fi
 
     "$SCRIPT_DIR/patch_log_hook.sh" "$TOOL_LOWER" "$VERSION"

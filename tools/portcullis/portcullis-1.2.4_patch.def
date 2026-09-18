@@ -1,0 +1,463 @@
+Bootstrap: docker
+From: ubuntu:22.04
+
+%labels
+    Maintainer sdweave2@ncsu.edu
+    Source https://github.com/EI-CoreBioinformatics/portcullis
+    Version 1.2.4_patch
+
+%help
+    portcullis — filters spurious splice junctions from pre-aligned
+    RNA-seq alignments using a self-trained random forest (or a custom
+    rule-based filter).
+
+    THIS IS A LOCALLY-PATCHED SOURCE BUILD, not vanilla upstream 1.2.4.
+    Re-pulling the plain Release-1.2.4 tag (or the bioconda/biocontainers
+    package of the same version) will NOT carry this fix — the patch
+    below is BRC's own, not upstream's.
+
+    Deployed as a SEPARATE version (1.2.4_patch) alongside the existing
+    portcullis/1.2.4 module (the unpatched, broken-filter build) on
+    purpose — this build has not yet had broad user testing, and the
+    existing 1.2.4 module is left completely untouched so nothing
+    currently depending on it is disrupted. Load explicitly with
+    `module load portcullis/1.2.4_patch`.
+
+    Both the official quay.io/biocontainers image for this version
+    (1.2.4--py310hfc0ef84_5) AND an independent from-scratch rebuild via
+    bioconda (mamba install portcullis=1.2.4, no Docker layering at all)
+    reliably crash during `portcullis filter` with:
+        Error: basic_string: construction from null is not valid
+    on BOTH the default self-trained ML filter and rule-based (-f)
+    filtering, on every real dataset tried, before any output from
+    portcullis's embedded Python step appears (it links libpython
+    directly and calls into it in-process; confirmed via strace that no
+    execve to a python3 process ever happens). Since the bug reproduces
+    identically across two independently-built binaries of the exact
+    same upstream source, it is not a container-packaging artifact.
+
+    Root cause, found by reading bioconda's own patch set for this
+    package: bioconda's 0004-python_helper.patch (needed to fix a
+    build-time API removal in newer CPython) changed
+    lib/include/portcullis/python_helper.hpp's Py_Initialize() call to
+    the modern Py_InitializeFromConfig()/PyConfig API, but left the
+    *other* calls in that same constructor as the OLD legacy globals
+    (Py_SetProgramName, Py_GetPath, Py_SetPath) -- CPython does not
+    support mixing the legacy init globals with a separate PyConfig
+    handed to Py_InitializeFromConfig() afterwards. This build instead
+    rewrites that constructor to use only the modern PyConfig API end to
+    end (see the inline patch applied in %post below for the exact
+    diff/rationale). This has NOT yet been proposed upstream.
+
+    BUILD NOTE: this source build also hit a second, separate bug during
+    ./configure -- Ubuntu 22.04 ships Python 3.10, whose stdlib
+    'distutils' module prints a DeprecationWarning to stderr on import.
+    autoconf-archive's AX_PYTHON_DEVEL macro (used by portcullis's
+    configure.ac to detect distutils) treats ANY stderr output from its
+    `python3 -c "import distutils"` probe as an import failure, even
+    though the import itself succeeds -- so configure aborted with
+    "Python3 not detected" despite python3/python3-dev/python3-distutils
+    all being correctly installed. bioconda's own 0002-ax_python_devel.patch
+    (applied below) does not cover this particular check. Fixed here by
+    exporting PYTHONWARNINGS=ignore::DeprecationWarning for the duration
+    of the build so the macro's probe sees clean output; this has no
+    effect on portcullis's runtime behavior.
+
+    VERIFIED (BRC/Hazel, 2026-09-18): both the default self-trained RF
+    filter and rule-based (-f) filtering ran to completion against real
+    junction data (673,505 input junctions; self-trained mode passed
+    530,019, rule-based mode also completed cleanly) -- exit code 0,
+    normal pass/fail .tab/.bed/.intron.gff3 outputs written, no crash.
+    The built-in test step below still only proves the binary launches
+    and parses arguments (--help), since exercising the embedded Python
+    init path requires real prep/junc input data not available at build
+    time -- the verification above was done separately against a real
+    dataset.
+
+    Usage:
+        apptainer run portcullis-1.2.4_patch.sif <prep|junc|filter|full> [options]
+
+    Common subcommands:
+        prep    Prepares BAM and genome for junction analysis
+        junc    Identifies potential junctions from a prepared BAM
+        filter  Filters junctions (self-trained RF by default; -f/--filter_file
+                for a custom rule-based JSON filter; -n/--no_ml to disable ML)
+        full    Runs prep + junc + filter in one go
+
+    Example:
+        apptainer run portcullis-1.2.4_patch.sif filter --threads 4 \
+            --output portcullis_filter/portcullis --save_bad --intron_gff \
+            <prep_dir> <junctions.tab>
+
+%post -c /bin/bash
+    set -e
+    set -o pipefail
+    # The header above MUST read exactly '%post -c /bin/bash' — Apptainer's
+    # %post does NOT honor a '#!/bin/bash' shebang line inside the body;
+    # without -c /bin/bash it runs under /bin/sh (dash), which lacks
+    # 'set -o pipefail'. Apptainer also does not fail the build on a
+    # failed %post command without 'set -e'.
+    export DEBIAN_FRONTEND=noninteractive
+
+    # Works around a known autoconf-archive AX_PYTHON_DEVEL bug: on
+    # Python 3.10+, `import distutils` prints a DeprecationWarning to
+    # stderr, and the macro's probe treats any stderr output as an
+    # import failure -- aborting configure with "Python3 not detected"
+    # even though distutils imports fine. Scoped to DeprecationWarning
+    # only so real errors elsewhere still surface. Must be set before
+    # autoreconf/configure run (both invoke python3 subprocesses).
+    export PYTHONWARNINGS="ignore::DeprecationWarning"
+
+    # Hazel bind-mount points
+    mkdir -p /rs1 /share /home /usr/local/usrapps
+
+    # ------------------------------------------------------------------
+    # Build dependencies (Pattern 0/2 hybrid: adapting upstream's own
+    # autotools build, translated from bioconda's build.sh onto a plain
+    # Ubuntu base instead of conda, specifically so we can apply our own
+    # patch to lib/include/portcullis/python_helper.hpp — see %help).
+    #
+    # python3-distutils is required in addition to python3-dev: on
+    # Ubuntu 22.04, Debian/Ubuntu split the stdlib 'distutils' module out
+    # of the base python3 package into this separate package even though
+    # CPython 3.10 itself still ships it. Without it, configure's
+    # AX_PYTHON_DEVEL check ("checking for the distutils Python
+    # package...") fails to import distutils and configure aborts with
+    # "Python3 not detected" even though python3/python3-dev/python3-pip
+    # are all present and correct.
+    # ------------------------------------------------------------------
+    apt-get update -qq && \
+        apt-get install -y --no-install-recommends \
+            build-essential \
+            autoconf \
+            automake \
+            libtool \
+            pkg-config \
+            m4 \
+            libboost-all-dev \
+            zlib1g-dev \
+            samtools \
+            python3 \
+            python3-dev \
+            python3-distutils \
+            python3-pip \
+            ca-certificates \
+            curl && \
+        apt-get clean && \
+        rm -rf /var/lib/apt/lists/*
+
+    # meta.yaml pins setuptools<82 (newer setuptools removed something
+    # scripts/{junctools,portcullis}/setup.py needs); pandas/numpy/
+    # matplotlib/tabulate/sphinx match bioconda's host+run requirements
+    # (pandas is also required at ./configure time -- AX_PYTHON_MODULE
+    # checks it's importable).
+    pip3 install --no-cache-dir "setuptools<82" pandas numpy matplotlib tabulate sphinx
+
+    # ------------------------------------------------------------------
+    # Fetch upstream source (authoritative -- same tag bioconda builds:
+    # EI-CoreBioinformatics/portcullis, Release-1.2.4).
+    # ------------------------------------------------------------------
+    mkdir -p /opt/build
+    cd /opt/build
+    curl -fsSL -o portcullis.tar.gz \
+        https://github.com/EI-CoreBioinformatics/portcullis/archive/refs/tags/Release-1.2.4.tar.gz
+    tar xzf portcullis.tar.gz
+    cd portcullis-Release-1.2.4
+
+    # ------------------------------------------------------------------
+    # Apply bioconda's own compatibility patches (boost API renames for
+    # newer boost, an ax_python_devel.m4 version-check fix, and dropping
+    # -m64 which isn't needed/valid on all targets). These three are
+    # upstream-agnostic compile fixes, unrelated to the actual bug, and
+    # are adopted as-is.
+    # ------------------------------------------------------------------
+    for p in 0001-boost-leaf.patch 0002-ax_python_devel.patch 0003-src.patch m64.patch; do
+        curl -fsSL -o "/tmp/${p}" \
+            "https://raw.githubusercontent.com/bioconda/bioconda-recipes/master/recipes/portcullis/${p}"
+        patch -p1 < "/tmp/${p}"
+    done
+
+    # ------------------------------------------------------------------
+    # BRC fix: replace python_helper.hpp with a fully PyConfig-based
+    # rewrite of PyHelper's constructor (see %help for the diagnosis).
+    # This supersedes bioconda's own 0004-python_helper.patch -- keeps
+    # its _Py_fopen -> fopen fix (still needed to compile against
+    # newer CPython) but rewrites the interpreter-init sequence instead
+    # of layering the new PyConfig call on top of the old legacy globals.
+    # ------------------------------------------------------------------
+    cat > lib/include/portcullis/python_helper.hpp << 'PYHELPEREOF'
+//  ********************************************************************
+//  This file is part of Portcullis.
+//
+//  Portcullis is free software: you can redistribute it and/or modify
+//  it under the terms of the GNU General Public License as published by
+//  the Free Software Foundation, either version 3 of the License, or
+//  (at your option) any later version.
+//
+//  Portcullis is distributed in the hope that it will be useful,
+//  but WITHOUT ANY WARRANTY; without even the implied warranty of
+//  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+//  GNU General Public License for more details.
+//
+//  You should have received a copy of the GNU General Public License
+//  along with Portcullis.  If not, see <http://www.gnu.org/licenses/>.
+//  *******************************************************************
+
+#pragma once
+
+#include <stdint.h>
+#include <stdlib.h>
+#include <sstream>
+#include <fstream>
+#include <string>
+#include <vector>
+#include <iostream>
+using std::stringstream;
+using std::ifstream;
+using std::string;
+using std::cout;
+using std::endl;
+using std::vector;
+
+#ifdef HAVE_PYTHON
+#include <Python.h>
+#endif
+
+#include <boost/filesystem/path.hpp>
+#include <boost/algorithm/string/join.hpp>
+namespace bfs = boost::filesystem;
+using bfs::path;
+
+#include <portcullis/portcullis_fs.hpp>
+
+namespace portcullis {
+
+typedef boost::error_info<struct PortcullisPythonError,string> PortcullisPythonErrorInfo;
+struct PortcullisPythonException: virtual boost::exception, virtual std::exception { };
+
+// This class provides an easy way to run embedded python scripts within Portcullis.
+// This is a singleton class as the python API can be a bit tetchy, at least the
+// way we use it here.  So only one global version of this should be available.
+class PyHelper {
+private:
+    bool verbose;
+    wchar_t* py_interp = NULL;
+
+    string full_python_path_str;
+    wchar_t* full_python_path_wchar = NULL;
+
+    PyHelper() {
+#ifdef PY_DEBUG
+        this->verbose = true;
+#else
+		this->verbose = false;
+#endif
+
+#ifdef HAVE_PYTHON
+
+        if (this->verbose) {
+            cout << endl << "Initialising python interpreter ..." << endl;
+        }
+
+        // BRC fix (2026-09-18): rewritten to use ONLY the modern PyConfig
+        // init API end to end. The upstream/bioconda version mixed legacy
+        // globals (Py_SetProgramName, Py_GetPath, Py_SetPath) with a later
+        // PyConfig/Py_InitializeFromConfig call that bioconda's own
+        // 0004-python_helper.patch added just to fix a build-time API
+        // removal in newer CPython. Py_GetPath() implicitly triggers
+        // CPython's legacy pre-init path calculation, and that state is
+        // NOT shared with a separate, fresh PyConfig handed to
+        // Py_InitializeFromConfig() afterwards -- CPython does not
+        // support mixing the two initialization styles. Reproduced
+        // (BRC/Hazel, 2026-09-18): this exact sequence crashes with
+        // "basic_string: construction from null is not valid" before any
+        // embedded python code runs, identically on the official
+        // biocontainers image AND an independent from-source rebuild --
+        // i.e. this is a bug in the init sequence itself, not a packaging
+        // artifact.
+        //
+        // Fix: never call the legacy setters/getters at all. Set
+        // config.program_name to PYTHON_INT_PATH (the real python3
+        // interpreter configure detected -- see m4/ax_python_devel.m4)
+        // so CPython's own path-finder can correctly locate its stdlib
+        // relative to that interpreter, and set config.pythonpath_env to
+        // just portcullis's own extra directories (its scripts dir +
+        // site-packages) instead of re-injecting a stale pre-init
+        // snapshot of the baseline sys.path.
+        this->py_interp = Py_DecodeLocale(PYTHON_INT_PATH, NULL);
+
+        string py_path_here(portcullis::pfs.getScriptsDir().string() + ":" + PYTHON_INTERP_SITE_PKGS);
+        this->full_python_path_str = py_path_here;
+        if (this->verbose) {
+            cout << " - Program name (python interpreter) : " << PYTHON_INT_PATH << endl
+                 << " - PYTHONPATH (added here)           : " << py_path_here << endl;
+        }
+        this->full_python_path_wchar = Py_DecodeLocale(this->full_python_path_str.c_str(), NULL);
+
+        PyConfig config;
+        PyConfig_InitPythonConfig(&config);
+        PyStatus status;
+
+        status = PyConfig_SetString(&config, &config.program_name, this->py_interp);
+        if (PyStatus_Exception(status)) {
+            PyConfig_Clear(&config);
+            BOOST_THROW_EXCEPTION(PortcullisPythonException() << PortcullisPythonErrorInfo(string(
+                    "Failed to set python interpreter program_name")));
+        }
+
+        status = PyConfig_SetString(&config, &config.pythonpath_env, this->full_python_path_wchar);
+        if (PyStatus_Exception(status)) {
+            PyConfig_Clear(&config);
+            BOOST_THROW_EXCEPTION(PortcullisPythonException() << PortcullisPythonErrorInfo(string(
+                    "Failed to set python interpreter pythonpath_env")));
+        }
+
+        status = Py_InitializeFromConfig(&config);
+        PyConfig_Clear(&config);
+        if (PyStatus_Exception(status)) {
+            BOOST_THROW_EXCEPTION(PortcullisPythonException() << PortcullisPythonErrorInfo(string(
+                    "Failed to initialise embedded python interpreter")));
+        }
+
+        if (this->verbose) {
+            cout << "Python interpretter initialised" << endl << endl;
+        }
+#else
+        BOOST_THROW_EXCEPTION(PortcullisPythonException() << PortcullisPythonErrorInfo(string(
+                "Portcullis not configured to use Python.  Please check your configuration and rebuild.")));
+#endif
+    }
+
+public:
+
+    PyHelper(PyHelper const&)        = delete;
+    void operator=(PyHelper const&)  = delete;
+
+    static PyHelper& getInstance() {
+        static PyHelper instance; // Guaranteed to be destroyed.  Instantiated on first use.
+        return instance;
+    }
+
+    void execute(const string script_name, int argc, char *argv[]) {
+#ifdef HAVE_PYTHON
+        if (this->verbose) {
+            cout << "Executing python script: " << script_name << " ..." << endl;
+        }
+
+        const path scripts_dir = portcullis::pfs.getScriptsDir();
+        const path full_script_path = path(scripts_dir.string() + "/" + script_name);
+
+        stringstream ss;
+
+        // Create wide char alternatives
+        wchar_t* wsn = Py_DecodeLocale(script_name.c_str(), NULL);
+        wchar_t* wsp = Py_DecodeLocale(full_script_path.c_str(), NULL);
+        wchar_t* wargv[50]; // Can't use variable length arrays!
+        wargv[0] = wsp;
+        ss << full_script_path.c_str();
+        for(int i = 1; i < argc; i++) {
+            wargv[i] = Py_DecodeLocale(argv[i], NULL);
+            ss << " " << argv[i];
+        }
+        for(int i = argc; i < 50; i++) {
+            wargv[i] = Py_DecodeLocale("\0", NULL);
+        }
+        if (this->verbose) {
+            cout << " - Setting arguments" << endl;
+        }
+        PySys_SetArgv(argc, wargv);
+
+        // BRC fix: _Py_fopen is a CPython-internal symbol no longer
+        // exported by newer CPython builds (matches bioconda's own
+        // 0004-python_helper.patch for this line) -- use plain fopen.
+        FILE* pf = fopen(full_script_path.c_str(), "r");
+        if (pf == NULL) {
+            BOOST_THROW_EXCEPTION(PortcullisPythonException() << PortcullisPythonErrorInfo(string(
+                    "Could not open script file as a python file object") + full_script_path.string()));
+        }
+
+        if (this->verbose) {
+            cout << " - Effective command line: python3 " << ss.str() << endl;
+            cout << " - Output from python script follows: " << endl << endl;
+        }
+
+        if (PyRun_SimpleFileEx(pf, full_script_path.c_str(), true) != 0) {
+            BOOST_THROW_EXCEPTION(PortcullisPythonException() << PortcullisPythonErrorInfo(string(
+                    "Unexpected python error")));
+        }
+
+        // Cleanup
+        PyMem_RawFree(wsn);
+        // No need to free up "wsp" as it is element 0 in the array
+        for(int i = 0; i < argc; i++) {
+            PyMem_RawFree(wargv[i]);
+        }
+
+        if (this->verbose) {
+            cout << endl << "Python script \"" << script_name << "\" executed successfully" << endl;
+        }
+#else
+        BOOST_THROW_EXCEPTION(PortcullisPythonException() << PortcullisPythonErrorInfo(string(
+                "Portcullis not configured to use Python.  Please check your configuration and rebuild.")));
+#endif
+    }
+
+    ~PyHelper() {
+#ifdef HAVE_PYTHON
+        Py_Finalize();
+        PyMem_RawFree(this->py_interp);
+        PyMem_RawFree(this->full_python_path_wchar);
+#endif
+    }
+};
+
+}
+PYHELPEREOF
+
+    # ------------------------------------------------------------------
+    # Build (autotools) -- mirrors bioconda's build.sh flags exactly,
+    # minus the gnuconfig config.guess/config.sub refresh (Ubuntu 22.04's
+    # own autoconf package already ships a current enough version for a
+    # standard x86_64-pc-linux-gnu build).
+    # ------------------------------------------------------------------
+    export CXXFLAGS="-O2 -std=c++14"
+    export ax_cv_python_version_ok=yes
+    autoreconf -if
+    ./configure --enable-silent-rules \
+        --disable-dependency-tracking \
+        --disable-option-checking \
+        --prefix=/usr/local \
+        --with-boost=/usr \
+        --with-boost-libdir=/usr/lib/x86_64-linux-gnu
+    make -j"$(nproc)"
+
+    # setuptools>=82 dropped find_packages in favour of
+    # find_namespace_packages-only paths -- same fix bioconda applies.
+    sed -i 's|find_packages|find_namespace_packages|' scripts/junctools/setup.py scripts/portcullis/setup.py
+
+    (cd scripts/junctools && pip3 install . --no-build-isolation --no-deps --no-cache-dir)
+    (cd scripts/portcullis && pip3 install . --no-build-isolation --no-deps --no-cache-dir)
+
+    make install
+    strip /usr/local/bin/portcullis
+
+    # ------------------------------------------------------------------
+    # Cleanup
+    # ------------------------------------------------------------------
+    cd /
+    rm -rf /opt/build
+
+%environment
+    export DEBIAN_FRONTEND=noninteractive
+
+%runscript
+    exec portcullis "$@"
+
+%test
+    # portcullis's top-level --help is not confirmed to exit 0 under its
+    # CLI parser, so verify on output content rather than trusting the
+    # exit code. This only proves the binary launches and parses
+    # arguments (--help), since exercising the embedded Python init path
+    # this rebuild targets requires real prep/junc input data not
+    # available at build time -- see %help for the real-data verification.
+    portcullis --help 2>&1 | grep -qi "portcullis"
