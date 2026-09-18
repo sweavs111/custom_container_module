@@ -1,0 +1,200 @@
+Bootstrap: docker
+From: condaforge/miniforge3:24.3.0-0
+
+%labels
+    Maintainer sdweave2@ncsu.edu
+    Source https://github.com/oushujun/EDTA
+    Version 2.3.0
+
+%help
+    EDTA — The Extensive de-novo TE Annotator: a package for automated
+    whole-genome de novo transposable element (TE) annotation and
+    benchmarking of TE library annotation performance.
+
+    Installed via bioconda (package: edta=2.3.0) using miniforge3 + mamba.
+
+    Usage:
+        apptainer run EDTA-2.3.0.sif [options]
+
+    Options (EDTA.pl — see full documentation at
+    https://github.com/oushujun/EDTA for the complete flag list):
+        --genome [file]        Genome assembly FASTA (required)
+        --species [Rice|Maize|others]  Genome-specific mode (default: others)
+        --step [all|filter|final|anno] Which step(s) to run (default: all)
+        --overwrite [0|1]      Overwrite existing results (default: 0)
+        --cds [file]           Coding sequence FASTA to filter gene-related sequences
+        --curatedlib [file]    Curated TE library for de novo TE annotation
+        --sensitive [0|1]      Run RepeatModeler for additional TE candidates (default: 0)
+        --anno [0|1]           Perform whole-genome TE annotation (default: 0)
+        --evaluate [0|1]       Evaluate TE annotation performance (default: 0)
+        --exclude [file]       BED of regions to exclude from TE analysis
+        --force [0|1]          Force minimal requirement to run EDTA
+        --repeatmasker [path]  RepeatMasker installation path
+        --check_dependencies   Check whether all dependencies are installed
+        --threads [int]        Number of threads (default: 4)
+
+    Example:
+        apptainer run EDTA-2.3.0.sif --genome genome.fa --species others \
+            --overwrite 1 --sensitive 1 --anno 1 --threads 8
+
+%post -c /bin/bash
+    set -e
+    set -o pipefail
+    # The header above MUST read exactly '%post -c /bin/bash' — Apptainer's
+    # %post does NOT honor a '#!/bin/bash' shebang line inside the body.
+    # Without -c /bin/bash, %post runs under /bin/sh (dash), which does not
+    # support 'set -o pipefail'. See CLAUDE.md lessons 6, 10.
+    export DEBIAN_FRONTEND=noninteractive
+
+    # Hazel bind-mount points
+    mkdir -p /rs1 /share /home /usr/local/usrapps
+
+    # Bioconda package (AUTHORITATIVE): edta=2.3.0
+    # Pattern 4 — miniforge3 + mamba, never continuumio/miniconda3 + classic
+    # conda (classic conda's solver can hang indefinitely on the combined
+    # bioconda+conda-forge index — see CLAUDE.md lesson 2).
+    #
+    # blast and pandas are pinned explicitly because edta=2.3.0's own recipe
+    # does not constrain them tightly enough on its own:
+    #   - blast<2.9 lacks makeblastdb's -blastdb_version flag, which
+    #     RepeatModeler 2.0.9's BuildDatabase calls unconditionally —
+    #     without a floor here, mamba solved blast=2.5.0 (2018) and
+    #     BuildDatabase died immediately ("Unknown argument:
+    #     blastdb_version"), taking out the RepeatModeler/LINE step.
+    #     No upper cap is needed here (see below).
+    #   - pandas>=3 turns TIR-Learner's bundled check_TIR_TSD.py
+    #     (which does positional access like `x[0]` on a Series) from a
+    #     deprecation warning into a hard KeyError — without a ceiling
+    #     here, mamba solved pandas=3.0.5 and TIR-Learner crashed.
+    #
+    # repeatmasker is deliberately NOT version-pinned here, even though an
+    # earlier revision of this file pinned it to >=4.2.4 to guarantee
+    # famdb's download_dfam.py utility (used below) exists. Two consecutive
+    # real `apptainer build` attempts proved that pin is a dead end: an
+    # explicit repeatmasker>=4.2.4 floor is mutually unsatisfiable with
+    # EVERY blast version from 2.9 through 2.17 in this channel snapshot,
+    # not just the specific version first tried:
+    #   - repeatmasker>=4.2.4 requires rmblast>=2.17.0, which itself pulls
+    #     in perl>=5.32.1, libzlib>=1.3.2, and (for rmblast's own newest
+    #     builds) entrez-direct>=25.3,<26.0a0.
+    #   - blast 2.9-2.12 requires perl>=5.26.2,<5.26.3.0a0 — directly
+    #     conflicts with rmblast's perl>=5.32.1 floor.
+    #   - blast 2.13-2.15 pin zlib/libzlib to <1.3.0a0 — directly conflicts
+    #     with rmblast's libzlib>=1.3.2 floor.
+    #   - blast 2.16-2.17 pin entrez-direct to ranges (22.1-23, 22.4-23,
+    #     24-25, 26-27) that never overlap rmblast's own
+    #     entrez-direct>=25.3,<26.0a0 requirement.
+    # There is no blast/repeatmasker>=4.2.4 combination the solver can
+    # satisfy, so forcing the floor just moves the failure around instead
+    # of fixing it. Leaving repeatmasker unpinned lets mamba pick whatever
+    # version is actually compatible with blast>=2.9 in this snapshot; the
+    # Dfam-library step below is made conditional on download_dfam.py
+    # actually existing, rather than assumed from a version floor — an
+    # older repeatmasker (pre-4.2.4) auto-downloads Dfam itself via its own
+    # post-link hook, so nothing else is required in that case either.
+    mamba create -n edta -y -c conda-forge -c bioconda edta=2.3.0 "blast>=2.9" "pandas<3"
+
+    # LTR_retriever's own dependency check dies with "cd-hit-est is not
+    # found in the CDHIT path !" during a real EDTA run (reproduced
+    # consistently across multiple runs), even though cd-hit-est is
+    # correctly installed and on PATH — confirmed by running the exact
+    # same `which cd-hit-est` call LTR_retriever makes internally,
+    # standalone, which succeeds every time. The discrepancy between
+    # standalone and in-pipeline behavior wasn't root-caused (this matches
+    # an open, unresolved upstream report: oushujun/EDTA#521, "cd-hit-est
+    # is not found" from inside a container, no fix posted as of this
+    # writing). Rather than depend on understanding that, sidestep it
+    # entirely: LTR_retriever reads a `paths` config file for CDHIT/etc.
+    # BEFORE ever falling back to `which` (see
+    # share/LTR_retriever/LTR_retriever's dependency-check block) — so
+    # populate it explicitly and the fragile runtime `which` lookup for
+    # cd-hit-est never happens at all.
+    sed -i 's|^CDHIT=.*|CDHIT=/opt/conda/envs/edta/bin/|' /opt/conda/envs/edta/share/LTR_retriever/paths
+
+    # %environment's PATH edit is only guaranteed to apply for
+    # `apptainer run`/`shell`/`exec` at *runtime* — it is not reliably
+    # sourced for %post/%test at *build* time, nor for container-mod's
+    # generated exec wrapper at deploy time. The mamba install itself
+    # succeeds (confirmed: EDTA.pl runs fine given its full path), but
+    # `command -v EDTA.pl` fails without this, which breaks %test here
+    # and would break the deployed module's bare-command invocation too.
+    # Wrap it in /usr/local/bin, which is unconditionally on PATH, so the
+    # bare `EDTA.pl` name always resolves regardless of section/context.
+    # This wrapper now does a real `conda activate` (not just a PATH
+    # prepend) before handing off, matching %environment below — see the
+    # comment there for why.
+    mkdir -p /usr/local/bin
+    cat > /usr/local/bin/EDTA.pl << 'INNEREOF'
+#!/bin/bash
+source /opt/conda/etc/profile.d/conda.sh
+# 2>/dev/null: a few unrelated packages' activate.d hooks (binutils/gcc/
+# gxx for this env) hit a bash parameter-expansion edge case and print
+# harmless "parameter expansion requires a literal" warnings on every
+# activation. Suppressed here rather than left to print on every EDTA.pl
+# invocation; a real activation failure would instead surface downstream
+# as EDTA.pl/its tools not resolving, which is not silenced.
+conda activate edta 2>/dev/null
+exec /opt/conda/envs/edta/bin/EDTA.pl "$@"
+INNEREOF
+    chmod +x /usr/local/bin/EDTA.pl
+
+    # Dfam library for RepeatMasker's famdb backend.
+    # repeatmasker>=4.2.4's bioconda recipe dropped the old post-link.sh
+    # hook that used to auto-download Dfam on install; famdb now ships a
+    # manual `download_dfam.py` tool for that version range instead.
+    # Because repeatmasker is intentionally left unpinned above (see the
+    # comment on the mamba create line), the resolved version may land on
+    # either side of that behavior change, so check for the tool rather
+    # than assuming it exists:
+    #   - if download_dfam.py exists (repeatmasker>=4.2.4 resolved), run
+    #     it to seed the library manually;
+    #   - if it doesn't (an older repeatmasker resolved), its own
+    #     post-link hook already downloaded Dfam automatically and there
+    #     is nothing left to do here.
+    # EDTA always calls RepeatMasker with an explicit -lib of its own
+    # (dummy fasta, --cds, --curatedlib, its own TE library, etc.) and
+    # never falls back to the bundled Dfam library for actual TE
+    # discovery, so Dfam here only needs to satisfy RepeatMasker's own
+    # startup sanity check, not power annotation. Fetch just:
+    #   1. Root (taxonomy index)        — required,  ~58 MB
+    #   2. Curated consensus sequences  — optional,  ~27 MB
+    # (per famdb's own README: "sufficient for most RepeatMasker use
+    # cases"). Skip curated/uncurated HMM and uncurated consensus
+    # components — multi-GB to 165 GB total and unused by EDTA.
+    if [ -x /opt/conda/envs/edta/bin/download_dfam.py ]; then
+        echo "1,2" | /opt/conda/envs/edta/bin/download_dfam.py
+    fi
+
+    mamba clean -afy
+
+%environment
+    export DEBIAN_FRONTEND=noninteractive
+    # A real `conda activate` (not just prepending PATH) in case EDTA's
+    # own scripts, or one of its many bundled sub-tools (LTR_retriever,
+    # TIR-Learner, etc.), key behavior off activation-only state
+    # (CONDA_PREFIX/CONDA_DEFAULT_ENV/CONDA_SHLVL, or an activate.d hook)
+    # rather than just resolving binaries via PATH. Confirmed by a real
+    # EDTA run: this alone fixed both LTR_retriever's cd-hit-est
+    # detection AND TIR-Learner's pandas crash (see the two long comments
+    # above) — a bare PATH prepend never fully replicates `conda
+    # activate`, and whatever EDTA/its sub-tools were keying off of it,
+    # this covers it, even though the exact mechanism was never isolated.
+    #
+    # 2>/dev/null on the activate line: see the matching comment on the
+    # /usr/local/bin/EDTA.pl wrapper above — a few unrelated packages'
+    # activate.d hooks print harmless bash warnings on every activation.
+    source /opt/conda/etc/profile.d/conda.sh
+    conda activate edta 2>/dev/null
+
+%runscript
+    exec EDTA.pl "$@"
+
+%test
+    # Explicit activation here too — %environment is not sourced for
+    # %test (see comment above the /usr/local/bin/EDTA.pl wrapper).
+    source /opt/conda/etc/profile.d/conda.sh
+    conda activate edta 2>/dev/null
+    # EDTA.pl's --help behavior under its CLI parser is not confirmed to
+    # exit 0 (see CLAUDE.md lesson 8), so verify on output content rather
+    # than trusting the exit code.
+    EDTA.pl --help 2>&1 | grep -qi "usage"

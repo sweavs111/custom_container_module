@@ -1,0 +1,58 @@
+Bootstrap: docker
+From: python:3.9-slim-bookworm
+
+# python:3.9-slim-bookworm used instead of the usual ubuntu:22.04 base
+# (Pattern 1) because ubuntu:22.04's python3 is 3.10, not 3.9 — Python 3.9
+# was requested explicitly, and the official python:3.9 image guarantees
+# that exact interpreter version without a deadsnakes-PPA detour.
+
+%labels
+    Maintainer sdweave2@ncsu.edu
+    Source https://github.com/biopython/biopython
+    Version 1.81
+
+%help
+    biopython — general-purpose Python 3.9 environment with Biopython,
+    pandas, and numpy pinned for reproducibility.
+
+    Pinned versions:
+        python     3.9
+        biopython  1.81
+        pandas     2.0.3
+        numpy      1.24.4
+
+    Usage:
+        apptainer run biopython-1.81.sif [python args]
+        apptainer exec biopython-1.81.sif python3 my_script.py
+
+    Example:
+        apptainer run biopython-1.81.sif -c "import Bio, pandas, numpy; print(Bio.__version__)"
+
+%post -c /bin/bash
+    set -e
+    export DEBIAN_FRONTEND=noninteractive
+
+    # Hazel bind-mount points
+    mkdir -p /rs1 /share /home /usr/local/usrapps
+
+    # System packages
+    apt-get update -qq && \
+        apt-get install -y --no-install-recommends \
+            ca-certificates && \
+        apt-get clean && \
+        rm -rf /var/lib/apt/lists/*
+
+    # Pinned Python packages
+    pip3 install --no-cache-dir \
+        numpy==1.24.4 \
+        pandas==2.0.3 \
+        biopython==1.81
+
+%environment
+    export DEBIAN_FRONTEND=noninteractive
+
+%runscript
+    exec python3 "$@"
+
+%test
+    python3 -c "import Bio, pandas, numpy; print('Bio', Bio.__version__, 'pandas', pandas.__version__, 'numpy', numpy.__version__)"

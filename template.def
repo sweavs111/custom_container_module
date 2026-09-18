@@ -130,6 +130,28 @@ From: ubuntu:22.04
 #     create`/`mamba install` line in %post — a one-line environment
 #     variable, not a base-image change, consistent with the no-base-image-
 #     switch rule above.
+#   - CONDA_OVERRIDE_CUDA above only pins the CUDA MAJOR version — that is
+#     NOT sufficient on its own for Pattern 4 and will pass build/%test/
+#     get_build_info() while still being broken on real GPU hardware (see
+#     CLAUDE.md lesson 12). Confirmed empirically on jaeger-bio=1.26.4 with
+#     only CONDA_OVERRIDE_CUDA=12 set: tensorflow solved against CUDA 12.6,
+#     but cuda-nvcc (pulled in transitively — provides ptxas, which XLA's
+#     runtime JIT step shells out to) solved independently to 12.9. That
+#     skew is silent through the entire build/test pipeline and only
+#     surfaces as a bare "JIT compilation failed" the moment real inference
+#     hits a GPU op — on a real GPU node (Tesla P100), not on the GPU-less
+#     login node the build itself always runs on. Fix: also pin the whole
+#     solve to one CUDA minor version with conda-forge's `cuda-version`
+#     metapackage, e.g.:
+#         mamba create -n <tool> -y -c conda-forge -c bioconda \
+#             <package>=<version> "cuda-version=<X.Y>"
+#     Pick <X.Y> from whatever the GPU framework actually solved to in a
+#     first pass (e.g. read it back with
+#     `python -c "import tensorflow as tf; print(tf.sysconfig.get_build_info())"`
+#     inside the built container) — don't guess it. A Pattern-4 GPU build is
+#     NOT validated by `apptainer build` + `%test` + get_build_info() alone;
+#     all three can pass with this bug present. Real verification requires
+#     running actual inference on a GPU node.
 # ------------------------------------------------------------
 
 %labels

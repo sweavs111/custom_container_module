@@ -1,0 +1,111 @@
+Bootstrap: docker
+From: rockylinux:9
+
+# NOTE on provenance (departs from this project's usual Pattern 0-4 install
+# patterns — see CLAUDE.md): BV-BRC-Go-SDK is a 101-command Go CLI suite
+# (p3-*), not a single-tool bioinformatics package. It has no PyPI/bioconda
+# presence and no Python packaging, so this project's automated
+# create_def_file.sh (Python/bioconda-oriented) was skipped entirely — this
+# .def was hand-authored instead, adapting the install logic straight from
+# upstream's own tools/build-apptainer.sh (see
+# https://github.com/olsonanl/BV-BRC-Go-SDK/blob/main/build-apptainer.sh),
+# per CLAUDE.md lesson 4. Upstream's binaries are fully static
+# (CGO_ENABLED=0), so the container only needs a CA bundle plus the
+# release tarball's bin/ dropped onto PATH.
+#
+# The release tarball bound in below (%files) was downloaded from
+# upstream's official v2.0.11 GitHub Release and its sha256 was verified
+# against the release's own published bvbrc-cli-2.0.11-checksums.sha256
+# before this build ever ran (upstream does not publish a checksum for its
+# prebuilt .sif assets — only for the tarball/installer artifacts — which
+# is why this build extracts from the checksummed tarball rather than
+# re-hosting upstream's prebuilt .sif directly).
+
+%files
+    /share/brc/sdweave2/.apptainer/bvbrc_src/bvbrc-cli-2.0.11-linux-amd64.tar.gz /opt/bvbrc-cli.tar.gz
+
+%labels
+    Maintainer sdweave2@ncsu.edu
+    Source https://github.com/olsonanl/BV-BRC-Go-SDK
+    Version 2.0.11
+
+%help
+    BV-BRC-Go-SDK — Go language implementation of the BV-BRC CLI toolkit,
+    providing 101 p3-* command-line tools (mirroring the Perl p3_cli suite)
+    for programmatic and command-line access to BV-BRC bioinformatics data
+    and services (genomes, features, subsystems, job submission, etc.),
+    plus importable Go libraries (api, appservice, auth, workspace).
+
+    This is a multi-command toolkit, not a single tool — %runscript passes
+    its arguments straight through to whichever p3-* command you name, so
+    every command in the suite is reachable the same way.
+
+    Usage:
+        apptainer run BV-BRC-Go-SDK-2.0.11.sif <p3-command> [options]
+        apptainer exec BV-BRC-Go-SDK-2.0.11.sif <p3-command> [options]
+
+    Examples:
+        apptainer run BV-BRC-Go-SDK-2.0.11.sif p3-login --help
+        apptainer run BV-BRC-Go-SDK-2.0.11.sif p3-all-genomes --help
+        apptainer run BV-BRC-Go-SDK-2.0.11.sif p3-submit-genome-assembly --help
+
+    See https://github.com/olsonanl/BV-BRC-Go-SDK for the full command
+    reference (101 p3-* commands under cmd/).
+
+%post -c /bin/bash
+    set -e
+    export DEBIAN_FRONTEND=noninteractive
+
+    # Hazel bind-mount points
+    mkdir -p /rs1 /share /home /usr/local/usrapps
+
+    # Static Go binaries only need a CA bundle for TLS against the BV-BRC
+    # data API. rockylinux:9's base image already ships a working
+    # ca-certificates package (its own dnf metadata fetches above already
+    # succeeded over TLS using it), so no dnf/rpm work is needed for CA
+    # certs at all — and none is safe to do here: any `dnf install/upgrade
+    # ca-certificates` resolves to an *upgrade* transaction against the
+    # already-installed package, and that transaction's RPM payload unpack
+    # itself fails under Apptainer's rootless/fakeroot build sandbox
+    # ("Error unpacking rpm package ca-certificates...") — confirmed
+    # empirically across two build attempts (2026-08-06): plain install
+    # failed, and retrying with `--setopt=tsflags=nocontexts` (which only
+    # skips SELinux context labeling, not the unpack step) failed
+    # identically. This is the RPM-world counterpart to CLAUDE.md lesson
+    # 7's dpkg/SELinux failure — avoiding the RPM transaction entirely is
+    # the fix, not adding more flags to it.
+    #
+    # Instead, fetch curl's official, regularly-updated CA bundle (the
+    # Mozilla root program, repackaged by the curl project) straight to
+    # disk — bypassing dnf/rpm so the unpack bug can't fire — and point
+    # Go's TLS stack at it explicitly via SSL_CERT_FILE (Go's crypto/x509
+    # on Unix honors this env var as an override to the system trust
+    # store). Fetched over the same already-verified-working TLS path the
+    # base image's own dnf calls just used above.
+    curl -fsSL https://curl.se/ca/cacert.pem -o /etc/pki/tls/certs/ca-bundle-current.crt
+    dnf clean all
+
+    # Extract the (sha256-verified before build) release tarball's bin/ ->
+    # /usr/local/bin, already on PATH. Matches upstream's own
+    # build-apptainer.sh %post logic.
+    tar -xzf /opt/bvbrc-cli.tar.gz -C /usr/local --strip-components=1
+    rm /opt/bvbrc-cli.tar.gz
+
+%environment
+    export DEBIAN_FRONTEND=noninteractive
+    export LC_ALL=C
+
+%runscript
+    # Passthrough, not a single bareword command — deliberate deviation
+    # from this project's usual single-tool %runscript convention. This
+    # is a 101-command suite (p3-*); `exec "$@"` lets
+    # `apptainer run image.sif <any-p3-command> ...` work for all of them,
+    # matching upstream's own build-apptainer.sh choice.
+    exec "$@"
+
+%test
+    # p3-login is a representative smoke test, not "the" command. Go CLI
+    # help output doesn't reliably exit 0 across frameworks (see CLAUDE.md
+    # lesson 8), so this checks for "usage" in the combined output instead
+    # of trusting --help's exit code.
+    p3-login --help 2>&1 | grep -qi usage
