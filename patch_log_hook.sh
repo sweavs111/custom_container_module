@@ -30,6 +30,7 @@ cat >> "$MODULE_FILE" << 'HOOK_EOF'
 if { [module-info mode load] } {
     catch {
         set _ts    [clock format [clock seconds] -format {%Y-%m-%dT%H:%M:%S%z} -timezone :America/New_York]
+        set _ts    [regsub {(\d\d)$} $_ts {:\1}]
         set _user  $env(USER)
         set _group $env(GROUP)
         set _parts [split [module-info name] /]
