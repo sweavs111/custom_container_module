@@ -29,7 +29,7 @@ cat >> "$MODULE_FILE" << 'HOOK_EOF'
 #-- Log module load
 if { [module-info mode load] } {
     catch {
-        set _ts    [clock format [clock seconds] -format {%Y-%m-%dT%H:%M:%SZ} -gmt 1]
+        set _ts    [clock format [clock seconds] -format {%Y-%m-%dT%H:%M:%S%z} -timezone :America/New_York]
         set _user  $env(USER)
         set _group $env(GROUP)
         set _parts [split [module-info name] /]
