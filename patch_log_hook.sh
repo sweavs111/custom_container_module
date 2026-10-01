@@ -33,7 +33,7 @@ if { [module-info mode load] } {
         set _ts    [regsub {(\d\d)$} $_ts {:\1}]
         set _user  $env(USER)
         set _group $env(GROUP)
-        set _parts [split [module-info name] /]
+        set _parts [lrange [split [module-info name] /] end-1 end]
         set _tool  [lindex $_parts 0]
         set _ver   [lindex $_parts 1]
         set _fh    [open "/usr/local/usrapps/brc/brc_modules/logs/module_loads.log" a]
