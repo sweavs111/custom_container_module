@@ -1,0 +1,84 @@
+Bootstrap: docker
+From: ubuntu:24.04
+
+%labels
+    Maintainer sdweave2@ncsu.edu
+    Source https://github.com/ncbi/sra-tools
+    Version 3.4.1
+
+%help
+    sra-tools — The NCBI SRA (Sequence Read Archive) Toolkit: a collection
+    of tools for accessing and converting data from the INSDC Sequence
+    Read Archives (fasterq-dump, fastq-dump, prefetch, sam-dump,
+    sra-pileup, vdb-dump, vdb-validate, vdb-config, and others).
+
+    This is a multi-command toolkit, not a single tool — %runscript
+    dispatches its first argument as the sub-command to run, so every
+    binary in the suite is reachable the same way.
+
+    Usage:
+        apptainer run sra-tools-3.4.1.sif <command> [options]
+        apptainer exec sra-tools-3.4.1.sif <command> [options]
+
+    Examples:
+        apptainer run sra-tools-3.4.1.sif prefetch --help
+        apptainer run sra-tools-3.4.1.sif fasterq-dump --help
+        apptainer run sra-tools-3.4.1.sif vdb-config --help
+
+    See https://github.com/ncbi/sra-tools/wiki for full usage and
+    configuration documentation.
+
+%post -c /bin/bash
+    set -e
+    set -o pipefail
+    export DEBIAN_FRONTEND=noninteractive
+
+    # Hazel bind-mount points
+    mkdir -p /rs1 /share /home /usr/local/usrapps
+
+    # Install logic adapted directly from upstream's own
+    # build/docker/Dockerfile (current, not stale — modern ubuntu LTS
+    # base, no classic-conda/miniconda involvement, https:// download URL).
+    # ca-certificates is required here even though upstream's Dockerfile
+    # omits it — without it curl has no trust store to validate the
+    # https:// download and fails with "error adding trust anchors from
+    # file: /etc/ssl/certs/ca-certificates.crt", which empties the piped
+    # tar stream.
+    apt-get update -qq && \
+        apt-get install -y --no-install-recommends \
+            ca-certificates \
+            curl \
+            uuid-runtime && \
+        apt-get clean && \
+        rm -rf /var/lib/apt/lists/*
+
+    curl -fsSL https://ftp-trace.ncbi.nlm.nih.gov/sra/sdk/3.4.1/sratoolkit.3.4.1-alma_linux64-cloud.tar.gz | tar xz -C /
+
+    mkdir -p /root/.ncbi && \
+        printf '/LIBS/IMAGE_GUID = "%s"\n' "$(uuidgen)" > /root/.ncbi/user-settings.mkfg && \
+        printf '/libs/cloud/report_instance_identity = "true"\n' >> /root/.ncbi/user-settings.mkfg
+
+    # sra-tools ships ~20 independent binaries with no single entrypoint.
+    # container-mod's Programs field / exec wrappers require %runscript to
+    # be a single bare command resolvable via `command -v` — so provide a
+    # thin dispatcher wrapper (same technique as the Pattern 3 no-entry-
+    # point case) that forwards straight to whichever real sub-command is
+    # named as the first argument.
+    cat > /usr/local/bin/sra-tools << 'INNEREOF'
+#!/bin/bash
+exec "$@"
+INNEREOF
+    chmod +x /usr/local/bin/sra-tools
+
+%environment
+    export DEBIAN_FRONTEND=noninteractive
+    export PATH=/usr/local/ncbi/sra-tools/bin:${PATH}
+
+%runscript
+    exec sra-tools "$@"
+
+%test
+    # NCBI's kapp-based CLI help output doesn't reliably guarantee a 0 exit
+    # code across every sub-tool (lesson 8), so check for recognizable
+    # usage text instead of trusting the exit code alone.
+    sra-tools fasterq-dump --help 2>&1 | grep -qi usage

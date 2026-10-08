@@ -12,7 +12,7 @@
 #
 # Runs apptainer_build.sh once per GitHub URL in a list (generate .def if missing -> review -> build -> deploy).
 #
-# Usage: ./batch_build.sh urls.txt
+# Usage: ./batch_build.sh [--force] urls.txt
 # urls.txt: one GitHub URL per line; '#' comments and blank lines skipped.
 #
 # DEPLOY is forced true for every URL. For a DEPLOY=false dry run, use apptainer_build.sh directly.
@@ -32,13 +32,20 @@ if [[ -z "${CONTAINER_MOD:-}" || ! -x "$CONTAINER_MOD" ]]; then
 fi
 source "$(dirname "$CONTAINER_MOD")/profiles/$CONTAINER_MOD_PROFILE"
 
-URLS_FILE="${1:-}"
+# --force is passed through to apptainer_build.sh (skips review of newly generated .defs).
+URLS_FILE=""
+for arg in "$@"; do
+    case "$arg" in
+        --force) export FORCE=true ;;
+        *) URLS_FILE="$arg" ;;
+    esac
+done
 if [[ -z "$URLS_FILE" || ! -f "$URLS_FILE" ]]; then
-    echo "Usage: $0 <urls_file>" >&2
+    echo "Usage: $0 [--force] <urls_file>" >&2
     exit 1
 fi
 
-declare -a OK=() FAILED=() SKIPPED=()
+declare -a OK=() FAILED=() SKIPPED=() NEEDS_REVIEW=()
 
 # A URL counts as already done only if its .def exists AND a .sif matching
 # that .def's Version is already sitting in the public image dir — i.e. a
@@ -82,6 +89,9 @@ while IFS= read -r -u 3 URL || [[ -n "$URL" ]]; do
 
     if [[ $STATUS -eq 0 ]]; then
         OK+=("$URL")
+    elif [[ $STATUS -eq 3 ]]; then   # apptainer_build.sh's EXIT_NEEDS_REVIEW
+        echo "NEEDS REVIEW: $URL stopped at a review prompt with no input — continuing with next URL" >&2
+        NEEDS_REVIEW+=("$URL")
     else
         echo "ERROR: build/deploy failed for $URL (exit $STATUS) — continuing with next URL" >&2
         FAILED+=("$URL")
@@ -90,9 +100,10 @@ done 3< "$URLS_FILE"
 
 echo ""
 echo "=================================================================="
-echo "Batch summary: ${#OK[@]} succeeded, ${#SKIPPED[@]} skipped (already deployed), ${#FAILED[@]} failed"
-for u in "${OK[@]}"; do echo "  OK      - $u"; done
-for u in "${SKIPPED[@]}"; do echo "  SKIPPED - $u"; done
-for u in "${FAILED[@]}"; do echo "  FAIL    - $u"; done
+echo "Batch summary: ${#OK[@]} succeeded, ${#SKIPPED[@]} skipped (already deployed), ${#NEEDS_REVIEW[@]} need review, ${#FAILED[@]} failed"
+for u in "${OK[@]}"; do echo "  OK           - $u"; done
+for u in "${SKIPPED[@]}"; do echo "  SKIPPED      - $u"; done
+for u in "${NEEDS_REVIEW[@]}"; do echo "  NEEDS REVIEW - $u"; done
+for u in "${FAILED[@]}"; do echo "  FAIL         - $u"; done
 
-[[ ${#FAILED[@]} -eq 0 ]]
+[[ ${#FAILED[@]} -eq 0 && ${#NEEDS_REVIEW[@]} -eq 0 ]]

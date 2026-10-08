@@ -20,6 +20,11 @@
 # deliberately doesn't install a real GPU framework).
 
 set -uo pipefail
+# apptainer_build.sh prefers $SLURM_SUBMIT_DIR over $(dirname "$0") to find
+# its sibling scripts. If these tests run inside a Slurm job (e.g. sbatch on
+# xfer), that would point the scripts under test at the real repo — bypassing
+# the stubbed fix_def_file.sh/create_def_file.sh and calling the real claude CLI.
+unset SLURM_SUBMIT_DIR
 cd "$(dirname "$0")/.."
 REPO_ROOT="$PWD"
 

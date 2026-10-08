@@ -20,6 +20,16 @@
 # it, falling back to $(dirname "$0") for direct execution (login node,
 # tests/run_retry_loop_tests.sh, neither of which run under Slurm).
 SCRIPT_DIR="${SLURM_SUBMIT_DIR:-$(dirname "$0")}"
+
+# --force: skip the review prompt for a newly generated .def (for unattended
+# xfer/sbatch runs, where nothing can answer it). Does NOT skip the second
+# gate — the diff review when the retry loop modified the .def.
+for arg in "$@"; do
+    case "$arg" in
+        --force) export FORCE=true ;;
+        *) echo "Usage: $0 [--force]" >&2; exit 1 ;;
+    esac
+done
 source "$SCRIPT_DIR/config.sh"
 source "$SCRIPT_DIR/def_lib.sh"
 if [[ -z "${CONTAINER_MOD:-}" || ! -x "$CONTAINER_MOD" ]]; then
@@ -128,6 +138,22 @@ locate_def() {
     DEF="$result"
 }
 
+# Exit code for "stopped at a review prompt that nothing could answer" —
+# distinct from 0 so batch_build.sh reports it as NEEDS REVIEW, not OK.
+EXIT_NEEDS_REVIEW=3
+
+# Asks a review prompt into $REPLY. Under sbatch (or any run with no input),
+# `read` hits EOF instead of an answer — exit EXIT_NEEDS_REVIEW rather than
+# treating that as a silent "no" with exit 0.
+prompt_or_needs_review() {
+    if ! read -r -p "$1" REPLY; then
+        echo ""
+        echo "NEEDS REVIEW: no input available to answer the prompt above (unattended run?)." >&2
+        echo "Review $DEF and re-run interactively${SIF_FILE:+ — local .sif retained at $SIF_FILE, not deployed}." >&2
+        exit "$EXIT_NEEDS_REVIEW"
+    fi
+}
+
 DEF=""
 locate_def
 
@@ -140,10 +166,14 @@ if [[ -z "$DEF" ]]; then
         exit 1
     fi
     echo ""
-    echo "A .def file was generated but NOT reviewed. Re-run after checking"
-    echo "$DEF, or Ctrl-C now to review first."
-    read -r -p "Continue with build? [y/N] " REPLY
-    [[ "$REPLY" =~ ^[Yy]$ ]] || exit 0
+    if [[ "$FORCE" == true ]]; then
+        echo "FORCE=true: building generated $DEF without manual review."
+    else
+        echo "A .def file was generated but NOT reviewed. Re-run after checking"
+        echo "$DEF, or Ctrl-C now to review first."
+        prompt_or_needs_review "Continue with build? [y/N] "
+        [[ "$REPLY" =~ ^[Yy]$ ]] || exit 0
+    fi
 fi
 
 ### --- Extract version from .def ---
@@ -231,7 +261,7 @@ if (( ATTEMPT > 1 )); then
     echo "Diff from the version already reviewed:"
     diff -u "$DEF.orig.tmp" "$DEF" || true
     echo ""
-    read -r -p "Continue with this build (and deploy, if enabled)? [y/N] " REPLY
+    prompt_or_needs_review "Continue with this build (and deploy, if enabled)? [y/N] "
     [[ "$REPLY" =~ ^[Yy]$ ]] || { echo "Stopping — local .sif retained at $SIF_FILE, not deployed."; exit 0; }
 fi
 

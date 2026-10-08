@@ -4,6 +4,7 @@
 # e.g. SINGLE_GITHUB_URL="https://github.com/Shamir-Lab/PlasClass"
 SINGLE_GITHUB_URL="https://github.com/ZhaoXM-Lab/VirRep"
 DEPLOY="${DEPLOY:-true}"   # false to skip container-mod module generation
+FORCE="${FORCE:-false}"    # true (or --force) skips review of a newly generated .def — for unattended xfer/sbatch runs only
 
 # Do not edit directly — edit SINGLE_GITHUB_URL above instead.
 GITHUB_URL="${GITHUB_URL:-$SINGLE_GITHUB_URL}"

@@ -20,6 +20,11 @@
 # the other unit tests.
 
 set -uo pipefail
+# apptainer_build.sh prefers $SLURM_SUBMIT_DIR over $(dirname "$0") to find
+# its sibling scripts. If these tests run inside a Slurm job (e.g. sbatch on
+# xfer), that would point the scripts under test at the real repo — bypassing
+# the stubbed fix_def_file.sh/create_def_file.sh and calling the real claude CLI.
+unset SLURM_SUBMIT_DIR
 cd "$(dirname "$0")/.."
 REPO_ROOT="$PWD"
 
@@ -262,6 +267,84 @@ echo "== retry loop: declining the post-fix review prompt stops without deployin
 run_scenario $'1:::ERROR: could not install package foo-bar (version conflict)\n0:::' "yes" "good" "n\n"
 check "exit code"          "$SCENARIO_EXIT" "0"
 check "build called twice" "$(build_calls)" "2"
+cleanup_scenario
+
+# --force: a stub create_def_file.sh stands in for the real one (which
+# would call the claude CLI), so these scenarios start with NO .def and
+# exercise the "newly generated .def" review gate.
+cat > "$SCRIPTS_DIR/create_def_file.sh" <<'STUBEOF'
+#!/bin/bash
+mkdir -p tools/retrytesttool
+cp "$MOCK_GOOD_FIXTURE" tools/retrytesttool/retrytesttool.def
+STUBEOF
+chmod +x "$SCRIPTS_DIR/create_def_file.sh"
+
+# Like run_scenario, but no pre-existing .def, and extra args/env forwarded.
+run_generate_scenario() {
+    local plan="$1" stdin_text="$2"; shift 2
+    BUILD_TMP=$(mktemp -d)
+    MOCK_STATE_DIR=$(mktemp -d)
+    MOCK_BUILD_PLAN_FILE=$(mktemp)
+    printf '%s\n' "$plan" > "$MOCK_BUILD_PLAN_FILE"
+    export MOCK_STATE_DIR MOCK_BUILD_PLAN_FILE
+    export MOCK_GOOD_FIXTURE="$GOOD_FIXTURE"
+    export MOCK_SANDBOX_CMD_RESOLVES="yes"
+    export MOCK_FIX_MODE="good"
+    SCENARIO_OUT=$( cd "$BUILD_TMP" && printf '%b' "$stdin_text" | \
+        GITHUB_URL="https://github.com/example/retrytesttool" DEPLOY=false \
+        "$SCRIPTS_DIR/apptainer_build.sh" "$@" 2>&1 )
+    SCENARIO_EXIT=$?
+}
+
+echo
+echo "== review gate: declining review of a generated .def stops before building =="
+run_generate_scenario "0:::" "n\n"
+check "exit code"           "$SCENARIO_EXIT" "0"
+check "build NOT called"    "$(build_calls)" "0"
+cleanup_scenario
+
+echo
+echo "== --force: builds a generated .def with no review input =="
+run_generate_scenario "0:::" "" --force
+check "exit code"           "$SCENARIO_EXIT" "0"
+check "build called once"   "$(build_calls)" "1"
+cleanup_scenario
+
+echo
+echo "== FORCE=true env var: same as --force =="
+FORCE=true run_generate_scenario "0:::" ""
+check "exit code"           "$SCENARIO_EXIT" "0"
+check "build called once"   "$(build_calls)" "1"
+cleanup_scenario
+
+echo
+echo "== --force: does NOT skip the post-retry diff review gate =="
+run_generate_scenario $'1:::ERROR: could not install package foo-bar (version conflict)\n0:::' "n\n" --force
+check "exit code"           "$SCENARIO_EXIT" "0"
+check "build called twice"  "$(build_calls)" "2"
+check "stopped at diff gate" "$(grep -q 'Stopping' <<< "$SCENARIO_OUT" && echo yes || echo no)" "yes"
+cleanup_scenario
+
+echo
+echo "== no input at the generated-.def review prompt exits NEEDS REVIEW (3), not 0 =="
+run_generate_scenario "0:::" ""
+check "exit code"           "$SCENARIO_EXIT" "3"
+check "build NOT called"    "$(build_calls)" "0"
+cleanup_scenario
+
+echo
+echo "== --force: no input at the post-retry diff gate exits NEEDS REVIEW (3), not 0 =="
+run_generate_scenario $'1:::ERROR: could not install package foo-bar (version conflict)\n0:::' "" --force
+check "exit code"           "$SCENARIO_EXIT" "3"
+check "build called twice"  "$(build_calls)" "2"
+check "reports NEEDS REVIEW" "$(grep -q 'NEEDS REVIEW' <<< "$SCENARIO_OUT" && echo yes || echo no)" "yes"
+cleanup_scenario
+
+echo
+echo "== unknown argument is rejected =="
+run_generate_scenario "0:::" "" --bogus
+check "exit code"           "$SCENARIO_EXIT" "1"
+check "build NOT called"    "$(build_calls)" "0"
 cleanup_scenario
 
 rm -rf "$SCRIPTS_DIR" "$GOOD_FIXTURE"

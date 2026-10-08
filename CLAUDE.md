@@ -55,6 +55,20 @@ and is never typed separately, so it can't drift from the URL it came from.
    ```
 2. Run `./apptainer_build.sh` from this directory.
 
+**`--force` (or `FORCE=true`)** skips the review prompt after a new `.def`
+is generated. It exists for unattended `sbatch` runs on the `xfer`
+partition, where nothing can answer the prompt (`xfer` is batch-only, so
+`srun --pty` isn't an option). Use it there, not as the default for manual
+runs. It does **not** skip the second gate, the diff review shown when the
+retry loop modified the `.def`. A `--force` run that needed a retry fix will
+still stop at that gate, and in a batch job it will stop without deploying.
+
+When a review prompt gets no input at all (EOF — e.g. under `sbatch`), it
+is not treated as a silent "no": `apptainer_build.sh` exits **3**
+(`EXIT_NEEDS_REVIEW`) with a `NEEDS REVIEW` message, and `batch_build.sh`
+lists that URL under `NEEDS REVIEW` in its summary (and exits nonzero)
+instead of counting it as OK. An explicit `n` at a prompt still exits 0.
+
 `apptainer_build.sh` handles all steps automatically:
 - Sets `APPTAINER_CACHEDIR`/`APPTAINER_TMPDIR` to scratch (see lesson 1 above) before doing anything else.
 - Derives `TOOL` from `GITHUB_URL`, then locates its `.def` via `find_tool_def` (`def_lib.sh` — see "`.def` File Naming" below). If none is found, calls `create_def_file.sh <GitHubURL>` to generate it via Claude (gathers real evidence first — see "How `.def` generation works" below), then pauses for you to review the generated file before continuing.
@@ -102,9 +116,10 @@ To run the pipeline for a list of GitHub URLs instead of editing `config.sh` and
 
 ```bash
 ./batch_build.sh urls.txt   # one GitHub URL per line; '#' comments and blank lines skipped
+./batch_build.sh --force urls.txt   # same, skipping review of newly generated .defs (see --force above)
 ```
 
-This loops `GITHUB_URL=<url> DEPLOY=true ./apptainer_build.sh` over the list — one pass per URL (generate `.def` if missing → pause for review → build → deploy), same as the manual workflow, just without re-editing `config.sh` each time. The review pause in `apptainer_build.sh` (lesson 5) still fires per URL whenever a new `.def` is generated, so a batch run is not fully unattended the first time through a given tool list — you still review each generated `.def` before its build proceeds. A tool whose `.def` already exists builds straight through with no prompt. A failed build/deploy for one URL doesn't stop the rest; failures are collected and reported in a summary at the end.
+This loops `GITHUB_URL=<url> DEPLOY=true ./apptainer_build.sh` over the list — one pass per URL (generate `.def` if missing → pause for review → build → deploy), same as the manual workflow, just without re-editing `config.sh` each time. The review pause in `apptainer_build.sh` (lesson 5) still fires per URL whenever a new `.def` is generated, so a batch run is not fully unattended the first time through a given tool list — you still review each generated `.def` before its build proceeds (unless `--force` is passed, which goes through to every `apptainer_build.sh` call). A tool whose `.def` already exists builds straight through with no prompt. A failed build/deploy for one URL doesn't stop the rest; failures are collected and reported in a summary at the end.
 
 `config.sh` derives `GITHUB_URL="${GITHUB_URL:-$SINGLE_GITHUB_URL}"` — an environment `GITHUB_URL`, if set, always wins over `SINGLE_GITHUB_URL`. `batch_build.sh` sets `GITHUB_URL` per iteration via the environment, so it always takes priority automatically. This means switching between single and batch runs never requires touching or reverting anything in `config.sh` beyond `SINGLE_GITHUB_URL` itself — there's no default-variable syntax to remember or restore.
 
