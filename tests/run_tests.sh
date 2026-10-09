@@ -101,8 +101,8 @@ EOF
 
 MOD_DIR="$HOOK_TMP" ./patch_log_hook.sh "fixturetool" "1.0" > /dev/null
 check "hook appended"      "$(grep -c 'Log module load' "$HOOK_TMP/fixturetool/1.0")" "1"
-check "group field present" "$(grep -c '_group \$env(GROUP)' "$HOOK_TMP/fixturetool/1.0")" "1"
-check "puts line has 5 fields" "$(grep -c '\${_ts}|\${_user}|\${_group}|\${_tool}|\${_ver}' "$HOOK_TMP/fixturetool/1.0")" "1"
+check "sources the shared hook" "$(grep -cxF 'source "/usr/local/usrapps/brc/env/module_log.tcl"' "$HOOK_TMP/fixturetool/1.0")" "1"
+check "no inline logging code"  "$(grep -c 'module_loads.log' "$HOOK_TMP/fixturetool/1.0")" "0"
 
 MOD_DIR="$HOOK_TMP" ./patch_log_hook.sh "fixturetool" "1.0" > /dev/null
 check "idempotent — no duplicate hook on second run" "$(grep -c 'Log module load' "$HOOK_TMP/fixturetool/1.0")" "1"

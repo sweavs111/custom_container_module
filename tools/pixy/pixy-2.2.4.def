@@ -1,0 +1,61 @@
+Bootstrap: docker
+From: condaforge/miniforge3:24.3.0-0
+
+%labels
+    Maintainer sdweave2@ncsu.edu
+    Source https://github.com/ksamuk/pixy
+    Version 2.2.4
+
+%help
+    pixy — a command-line tool for painlessly computing unbiased estimators
+    of population genetic summary statistics that measure genetic variation
+    within (pi, Watterson's theta, Tajima's D) and between (dxy, Fst)
+    populations from a VCF. pixy is specifically designed to handle VCFs
+    containing invariant (monomorphic) sites, which are essential for
+    correctly computing pi and dxy in the presence of missing data.
+
+    Usage:
+        apptainer run pixy.sif pixy --stats pi fst dxy \
+            --vcf <input.vcf.gz> \
+            --populations <populations.txt> \
+            --window_size 10000 \
+            --output_folder <output_dir> \
+            --output_prefix <prefix>
+
+    Key options:
+        --stats           One or more of: pi, fst, dxy, watterson_theta, tajima_d
+        --vcf             bgzip-compressed, tabix/csi-indexed input VCF
+        --populations     Tab-separated file mapping sample IDs to population IDs
+        --window_size     Size of sliding windows (bp)
+        --bed_file        Use BED intervals instead of fixed windows
+        --n_cores         Number of parallel cores to use
+        --output_folder   Directory for output files
+        --output_prefix   Prefix for output file names
+
+    Example:
+        apptainer run pixy.sif pixy --help
+
+%post -c /bin/bash
+    set -e
+    set -o pipefail
+    export DEBIAN_FRONTEND=noninteractive
+
+    # Hazel bind-mount points
+    mkdir -p /rs1 /share /home /usr/local/usrapps
+
+    # pixy is distributed via conda-forge (see README badges) — use
+    # miniforge3 + mamba, never continuumio/miniconda3 + classic conda
+    # (CLAUDE.md lesson 2: classic conda's solver can hang indefinitely on
+    # the combined bioconda+conda-forge index).
+    mamba create -n pixy -y -c conda-forge -c bioconda pixy=2.2.4
+    mamba clean -afy
+
+%environment
+    export DEBIAN_FRONTEND=noninteractive
+    export PATH="/opt/conda/envs/pixy/bin:${PATH}"
+
+%runscript
+    exec pixy "$@"
+
+%test
+    pixy --help

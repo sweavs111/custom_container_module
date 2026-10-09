@@ -120,7 +120,7 @@ custom_container_module/
 ├── fix_def_file.sh           # regenerates a .def from real build-failure evidence (called by the retry loop)
 ├── def_lib.sh                # shared prompt/postprocessing/invariant-check/naming helpers
 ├── create_repos_entry.sh     # auto-generates container-mod metadata by parsing the .def
-├── patch_log_hook.sh         # appends the module-load logging TCL hook after deploy
+├── patch_log_hook.sh         # appends the shared module-load logging hook after deploy
 ├── template.def              # canonical .def template — documents 5 install patterns + GPU addendum
 ├── tests/
 │   ├── run_tests.sh              # regression suite for the pipeline scripts themselves
@@ -209,7 +209,7 @@ Every script that needs to find a tool's `.def` (`apptainer_build.sh`, `batch_bu
 | `create_def_file.sh <GitHubURL>` | Generates `tools/<ToolName>/<ToolName>-<Version>.def` for the given repo (tool name from the URL, version from the generated `Version` label). Gathers real evidence first — checks for an upstream container def, checks bioconda, checks for GPU-framework dependencies, and for unpackaged GitHub-source repos, parses actual `import` statements in the source rather than trusting the README — then hands all of that to Claude marked as authoritative. See `CLAUDE.md` for the full evidence-gathering order. |
 | `fix_def_file.sh <DefPath> <LogTailFile> [SandboxDiagFile]` | Regenerates a `.def` that failed a real build, using the actual failure evidence — called automatically by the retry loop in `apptainer_build.sh`, not normally invoked directly. |
 | `create_repos_entry.sh <def_file> <output_path>` | Generates the container-mod metadata file (Description, Home Page, Programs) by parsing the `.def` directly — no Claude required |
-| `patch_log_hook.sh <tool_lower> <version>` | Appends a TCL block to the module file that logs each `module load` event (timestamp, user, group, tool, version) to `/usr/local/usrapps/brc/brc_modules/logs/module_loads.log`; idempotent. Called automatically by `apptainer_build.sh` right after a successful `container-mod pipe` deploy — the same hook `container-mod_nf`'s `PATCH_LOG_HOOK` stage stamps onto modules built by that pipeline. |
+| `patch_log_hook.sh <tool_lower> <version>` | Appends a line that `source`s the shared hook `/usr/local/usrapps/brc/env/module_log.tcl` from the module file. That file logs each `module load` (timestamp, user, group, tool, version, module tree) to `/usr/local/usrapps/brc/brc_modules/logs/module_loads.log`; edit it once to change logging for every BRC module; idempotent. Called automatically by `apptainer_build.sh` right after a successful `container-mod pipe` deploy — the same hook `container-mod_nf`'s `PATCH_LOG_HOOK` stage stamps onto modules built by that pipeline. |
 | `batch_build.sh <urls_file>` | Runs `apptainer_build.sh` once per GitHub URL in a list — see "Batch Builds" above |
 
 `def_lib.sh` isn't invoked directly — it's a shared library sourced by `create_def_file.sh`, `fix_def_file.sh`, `apptainer_build.sh`, and `batch_build.sh` holding the logic that has to stay identical across all of them (prompt requirements, output postprocessing, the invariant check, the environment-failure classifier, and `.def` lookup/naming).

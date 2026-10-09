@@ -210,7 +210,7 @@ Start from `template.def` — it documents all 5 install patterns with the decis
 | `create_def_file.sh <GitHubURL>` | Generates `tools/<ToolName>/<ToolName>-<Version>.def` for the given repo (tool name derived from the URL, version from the generated `Version` label) — see "How `.def` generation works" above and "`.def` File Naming" above. |
 | `fix_def_file.sh <DefPath> <LogTailFile> [SandboxDiagFile]` | Regenerates a `.def` that failed a real build, using the actual failure evidence — called automatically by `apptainer_build.sh`'s retry loop, not normally invoked directly. See "Automatic Retry on Build Failure" above. |
 | `create_repos_entry.sh <def_file> <output_path>` | Generates the container-mod metadata file (Description, Home Page, Programs) by parsing the `.def` directly — no Claude required, was never implicated in the old failures. |
-| `patch_log_hook.sh <tool_lower> <version>` | Appends the module-load logging TCL hook (timestamp, user, group, tool, version → `/usr/local/usrapps/brc/brc_modules/logs/module_loads.log`) to the deployed module file; idempotent. Called automatically right after a successful `container-mod pipe` deploy in `apptainer_build.sh` — this pipeline doesn't route through `container-mod_nf`'s own `PATCH_LOG_HOOK` stage, so without this call every module built here would silently ship without load logging (this is why `INHERIT`, `seeker`, `Jaeger`, and the other tools built through this repo were originally missing it). |
+| `patch_log_hook.sh <tool_lower> <version>` | Appends a `source` of the shared logging hook `/usr/local/usrapps/brc/env/module_log.tcl` (timestamp, user, group, tool, version, module tree → `/usr/local/usrapps/brc/brc_modules/logs/module_loads.log`) to the deployed module file; idempotent. Logging itself is changed in that shared file, never per module. Called automatically right after a successful `container-mod pipe` deploy in `apptainer_build.sh` — this pipeline doesn't route through `container-mod_nf`'s own `PATCH_LOG_HOOK` stage, so without this call every module built here would silently ship without load logging (this is why `INHERIT`, `seeker`, `Jaeger`, and the other tools built through this repo were originally missing it). |
 | `batch_build.sh <urls_file>` | Runs `apptainer_build.sh` once per GitHub URL in a list — see "Batch Builds" above. |
 
 `def_lib.sh` is not invoked directly — it's a shared library sourced by
@@ -234,7 +234,7 @@ custom_container_module/
 ├── fix_def_file.sh           # regenerates a .def from real build-failure evidence (called by apptainer_build.sh's retry loop)
 ├── def_lib.sh                # shared prompt/postprocessing/invariant-check helpers, sourced by the three scripts above
 ├── create_repos_entry.sh     # auto-generates container-mod metadata by parsing the .def
-├── patch_log_hook.sh         # appends the module-load logging TCL hook after deploy
+├── patch_log_hook.sh         # appends the shared module-load logging hook after deploy
 ├── template.def              # canonical .def template with the 5 install patterns
 ├── container_build.log       # timestamped build+deploy audit trail (gitignored)
 ├── tests/
