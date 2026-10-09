@@ -1,0 +1,128 @@
+Bootstrap: docker
+From: python:3.12-slim-bookworm
+
+# Pattern 0 — adapted from upstream's own apptainer/eggnog-mapper.def at tag
+# v3.0.0-beta6. Install logic (base image, Diamond/HMMER/Prodigal/MMseqs2
+# versions, Cython-then-source pip install) kept as-is. Changes:
+#   - source fetched from the pinned v3.0.0-beta6 tag tarball in %post instead
+#     of upstream's %files tarball built by their build.sh from git HEAD
+#   - MMseqs2 pinned to release 18-8cc5c instead of upstream's floating "latest"
+#   - HMMER source URL switched from http:// to https://
+#   - %arguments templating dropped (literal versions; our tooling reads the
+#     Version label directly)
+#   - `set -o pipefail` (curl | tar pipes) + Hazel bind-mount points added
+
+%labels
+    Maintainer sdweave2@ncsu.edu
+    Source https://github.com/eggnogdb/eggnog-mapper
+    Version 3.0.0-beta6
+    diamond_version 2.1.24
+    mmseqs2_version 18-8cc5c
+    hmmer_version 3.4
+    prodigal_version 2.6.3
+
+%help
+    eggNOG-mapper 3.0.0-beta6 — fast functional annotation of novel sequences
+    using precomputed eggNOG orthology assignments.
+
+    Bundled search backends (on PATH):
+        diamond   2.1.24
+        mmseqs    18-8cc5c
+        hmmer     3.4
+        prodigal  2.6.3
+
+    NOTE: eggNOG-mapper v3 expects eggNOG database version 7.0.0. Databases
+    are NOT included in the image — download them with download_eggnog_data.py
+    to a location on /share or /rs1 and point emapper.py at it with
+    --data_dir.
+
+    Usage:
+        apptainer run eggnog-mapper-3.0.0-beta6.sif [emapper.py options]
+        apptainer exec eggnog-mapper-3.0.0-beta6.sif download_eggnog_data.py --data_dir <dir>
+
+    Example:
+        apptainer run eggnog-mapper-3.0.0-beta6.sif -i proteins.faa -o sample \
+            --data_dir /path/to/eggnog_db --cpu "$SLURM_CPUS_PER_TASK"
+
+    Full options: apptainer run eggnog-mapper-3.0.0-beta6.sif --help
+
+%environment
+    export PATH=/opt/diamond:/opt/mmseqs/bin:/opt/hmmer/bin:/opt/prodigal:$PATH
+    export LANG=C.UTF-8
+    export LC_ALL=C.UTF-8
+
+%post -c /bin/bash
+    set -e
+    set -o pipefail
+    export DEBIAN_FRONTEND=noninteractive
+    export HOME=/root
+    export TMPDIR=/tmp
+
+    # Hazel bind-mount points
+    mkdir -p /rs1 /share /home /usr/local/usrapps
+
+    # Base system (Python 3.12 already present in base image)
+    apt-get update -qq
+    apt-get install -y --no-install-recommends \
+        ca-certificates \
+        curl \
+        gcc g++ make \
+        zlib1g-dev \
+        libgomp1
+    rm -rf /var/lib/apt/lists/*
+
+    # Diamond 2.1.24
+    mkdir -p /opt/diamond
+    curl -fsSL \
+        https://github.com/bbuchfink/diamond/releases/download/v2.1.24/diamond-linux64.tar.gz \
+        | tar -xz -C /opt/diamond
+    chmod +x /opt/diamond/diamond
+
+    # MMseqs2 18-8cc5c (extracts to /opt/mmseqs)
+    curl -fsSL \
+        https://github.com/soedinglab/MMseqs2/releases/download/18-8cc5c/mmseqs-linux-avx2.tar.gz \
+        | tar -xz -C /opt
+
+    # HMMER 3.4 (compiled from source)
+    mkdir -p /tmp/hmmer-build
+    curl -fsSL https://eddylab.org/software/hmmer/hmmer-3.4.tar.gz \
+        | tar -xz -C /tmp/hmmer-build --strip-components=1
+    cd /tmp/hmmer-build
+    ./configure --prefix=/opt/hmmer > /dev/null
+    make -j"$(nproc)" > /dev/null
+    make install > /dev/null
+    cd /
+    rm -rf /tmp/hmmer-build
+
+    # Prodigal 2.6.3
+    mkdir -p /opt/prodigal
+    curl -fsSL \
+        https://github.com/hyattpd/Prodigal/releases/download/v2.6.3/prodigal.linux \
+        -o /opt/prodigal/prodigal
+    chmod +x /opt/prodigal/prodigal
+
+    # Cython + eggNOG-mapper 3.0.0-beta6 from the pinned release tag
+    python3.12 -m pip install --break-system-packages --no-cache-dir "cython>=3.0"
+    mkdir -p /opt/emapper-src
+    curl -fsSL \
+        https://github.com/eggnogdb/eggnog-mapper/archive/refs/tags/v3.0.0-beta6.tar.gz \
+        | tar -xz -C /opt/emapper-src --strip-components=1
+    python3.12 -m pip install --break-system-packages --no-cache-dir /opt/emapper-src
+    rm -rf /opt/emapper-src
+
+%runscript
+    exec emapper.py "$@"
+
+%test
+    export PATH=/opt/diamond:/opt/mmseqs/bin:/opt/hmmer/bin:/opt/prodigal:$PATH
+    emapper.py --help > /dev/null
+    emapper.py --version
+    diamond --version
+    mmseqs version
+    hmmsearch -h > /dev/null
+    prodigal -v
+    python3.12 -c "
+import eggnogmapper.annotator._codec
+import eggnogmapper.annotator._collect_inner
+print('Cython extensions loaded OK')
+"
