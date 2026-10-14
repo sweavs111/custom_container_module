@@ -1,0 +1,54 @@
+Bootstrap: docker
+From: condaforge/miniforge3:24.3.0-0
+
+%labels
+    Maintainer sdweave2@ncsu.edu
+    Source https://github.com/MrOlm/inStrain
+    Version 1.10.0
+
+%help
+    inStrain — python program for analysis of co-occurring genome
+    populations from metagenomes. Enables highly accurate genome
+    comparisons, analysis of coverage and microdiversity, linkage
+    analysis, and sensitive SNP detection with gene localization and
+    synonymous/non-synonymous identification.
+
+    Usage:
+        apptainer run inStrain-1.10.0.sif <module> [options]
+
+    Modules:
+        profile   - Microdiversity and SNP-calling pipeline
+        compare   - Detailed strain-level comparison between profiles
+        (see `inStrain -h` for the full module list and flags)
+
+    Example:
+        apptainer run inStrain-1.10.0.sif profile mapping.bam genome_file.fasta -o inStrain_profile1
+        apptainer run inStrain-1.10.0.sif compare inStrain_profile1 inStrain_profile2
+        apptainer run inStrain-1.10.0.sif --help
+
+%post -c /bin/bash
+    set -e
+    export DEBIAN_FRONTEND=noninteractive
+
+    # Hazel bind-mount points
+    mkdir -p /rs1 /share /home /usr/local/usrapps
+
+    # Install inStrain via bioconda using mamba (NOT continuumio/miniconda3
+    # + classic conda — upstream's own Dockerfile uses that combination and
+    # its bundled OpenSSL can no longer TLS-handshake with anaconda.org;
+    # see CLAUDE.md lessons 2, 6, 7). No GPU-capable dependencies detected,
+    # so no GPU addendum applies.
+    mamba create -n instrain -y -c conda-forge -c bioconda instrain=1.10.0
+    mamba clean -afy
+
+%environment
+    export DEBIAN_FRONTEND=noninteractive
+    export PATH="/opt/conda/envs/instrain/bin:$PATH"
+
+%runscript
+    exec inStrain "$@"
+
+%test
+    . /opt/conda/etc/profile.d/conda.sh
+    conda activate instrain
+    inStrain --help
