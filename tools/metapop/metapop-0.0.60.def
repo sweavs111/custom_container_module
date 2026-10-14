@@ -1,0 +1,53 @@
+Bootstrap: docker
+From: condaforge/miniforge3:24.3.0-0
+
+%labels
+    Maintainer sdweave2@ncsu.edu
+    Source https://github.com/metaGmetapop/metapop
+    Version 0.0.60
+
+%help
+    MetaPop — a pipeline for the macro- and micro-diversity analyses and
+    visualization of metagenomic-derived populations.
+
+    MetaPop processes short-read data mapped to reference genomes to
+    calculate sample-level diversity metrics (abundance, population
+    diversity, similarity) and within-species diversity (nucleotide
+    polymorphisms and amino acid substitutions), with graphical summaries
+    of the results. It is organized into four modules: Preprocessing,
+    Microdiversity, Macrodiversity, and Visualization.
+
+    Installed from PyPI (metapop 0.0.60), which provides the `metapop`
+    entry point documented upstream. Note: the bioconda "metapop" package
+    is NOT this tool's Python pipeline — it is built from jiarong/MetaPop
+    and ships only the older standalone MetaPop.R scripts.
+
+    Usage:
+        apptainer run metapop-0.0.60.sif --input_samples <BAM dir> \
+            --reference <reference genome(s)> --norm <read counts file> [OPTIONS]
+
+    Run `apptainer run metapop-0.0.60.sif --help` for the full option list.
+
+%post -c /bin/bash
+    set -e
+
+    # Hazel bind-mount points
+    mkdir -p /rs1 /share /home /usr/local/usrapps
+
+    # Runtime deps exactly as listed in upstream's README install steps
+    # (miniforge3 + mamba per CLAUDE.md lesson 2), then the PyPI package.
+    mamba create -n metapop -y -c conda-forge -c bioconda \
+        python=3.10 pip numpy pysam samtools bcftools prodigal \
+        r-base r-data.table r-ggplot2 r-ggrepel r-rcolorbrewer r-doparallel \
+        r-cowplot r-bit64 r-gggenes r-stringr r-vegan r-compositions r-pheatmap
+    /opt/conda/envs/metapop/bin/pip install --no-cache-dir metapop==0.0.60
+    mamba clean -afy
+
+%environment
+    export PATH=/opt/conda/envs/metapop/bin:$PATH
+
+%runscript
+    exec metapop "$@"
+
+%test
+    metapop --help
