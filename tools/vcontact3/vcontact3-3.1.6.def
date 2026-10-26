@@ -1,0 +1,74 @@
+Bootstrap: docker
+From: condaforge/miniforge3:24.3.0-0
+
+%labels
+    Maintainer sdweave2@ncsu.edu
+    Source https://bitbucket.org/MAVERICLab/vcontact3
+    Version 3.1.6
+
+%help
+    vConTACT3 — Viral Contig Automatic Clustering and Taxonomy.
+    Clusters viral genomes with a reference database and assigns
+    taxonomy from shared protein clusters.
+
+    Usage:
+        apptainer run vcontact3-3.1.6.sif <subcommand> [options]
+
+    Subcommands (see `vcontact3 --help` for the full list and flags):
+        run       - Cluster user genomes with the reference database
+        prepare_databases - Download/prepare a reference database
+        version   - Print the installed version
+
+    Example:
+        apptainer run vcontact3-3.1.6.sif run --nucleotide genomes.fna \
+            --db-path /path/to/vcontact3_db --output vcontact3_out -t 8
+        apptainer run vcontact3-3.1.6.sif --help
+
+    Note: built in-house instead of using the quay.io biocontainer.
+    vcontact3 3.1.6 only requires pandas>=2.1.1 with no upper bound,
+    and the pyhdfd78af_1 biocontainer resolved pandas 3.0.3. pandas 3
+    raises on profiles.py:377 (assigning a string into a float64
+    column), so this image pins the data stack to pandas-2-era
+    versions.
+
+%post -c /bin/bash
+    set -e
+    export DEBIAN_FRONTEND=noninteractive
+
+    # Hazel bind-mount points
+    mkdir -p /rs1 /share /home /usr/local/usrapps
+
+    # Install vcontact3 via bioconda using mamba (see CLAUDE.md lesson 2).
+    # The recipe leaves pandas (and most of the data stack) unbounded, so a
+    # fresh solve drifts onto pandas 3, which breaks
+    # profiles.py:377 with "TypeError: Invalid value 'withUser' for dtype
+    # 'float64'". Pin vcontact3's direct dependencies to the versions in the
+    # quay.io pyhdfd78af_0 biocontainer, built while 3.1.6 was current
+    # (same failure class as CLAUDE.md lesson 9). No GPU-capable
+    # dependencies, so no GPU addendum applies.
+    mamba create -n vcontact3 -y -c conda-forge -c bioconda \
+        vcontact3=3.1.6 \
+        "python=3.11" \
+        "pandas=2.3.3" \
+        "numpy=1.26.4" \
+        "scipy=1.16.2" \
+        "scikit-learn=1.7.2" \
+        "scikit-bio=0.7.0" \
+        "pyarrow=21.0.0" \
+        "pytables=3.10.2" \
+        "matplotlib-base=3.10.7"
+    mamba clean -afy
+
+%environment
+    export DEBIAN_FRONTEND=noninteractive
+    export PATH="/opt/conda/envs/vcontact3/bin:$PATH"
+
+%runscript
+    exec vcontact3 "$@"
+
+%test
+    . /opt/conda/etc/profile.d/conda.sh
+    conda activate vcontact3
+    vcontact3 --help
+    # Guard against the pandas 3 regression this image exists to avoid.
+    python -c "import pandas, sys; v = pandas.__version__; print('pandas', v); sys.exit(0 if v.startswith('2.') else 1)"
