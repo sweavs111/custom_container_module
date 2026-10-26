@@ -2,8 +2,8 @@
 #SBATCH --job-name=apptainer_build
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=4
-#SBATCH --mem=16G
+#SBATCH --cpus-per-task=2
+#SBATCH --mem=12G
 #SBATCH --partition=xfer
 #SBATCH --qos=xfer
 #SBATCH --time=04:00:00
