@@ -1,0 +1,76 @@
+Bootstrap: docker
+From: python:3.11-slim-bookworm
+
+%labels
+    Maintainer sdweave2@ncsu.edu
+    Source https://github.com/AnantharamanLab/CheckAMG
+    Version 1.1.2
+
+%help
+    CheckAMG — automated discovery and curation of Auxiliary Metabolic Genes
+    (AMGs), Auxiliary Regulatory Genes (AReGs), and Auxiliary Physiology
+    Genes (APGs) encoded by viral genomes.
+
+    CheckAMG supports both CPU-only and GPU-accelerated execution. The
+    `de-novo` module (protein genome language model embedding + nearest-
+    neighbor search) benefits from GPU acceleration; the `annotate` module
+    (HMM-based) is CPU-bound.
+
+    GPU usage: this container must be run on a GPU-attached node with
+    --nv so the host NVIDIA driver is bound in:
+        apptainer run --nv CheckAMG-1.1.2.sif <args>
+    CPU-only usage works with a plain `apptainer run` (no --nv needed).
+
+    Before first use, download the reference databases (~116 GB, or
+    ~21 GB with --rm-hmm and excluding the de-novo module's database):
+        apptainer run CheckAMG-1.1.2.sif download -d /path/to/db/destination --rm-hmm
+
+    Modules:
+        annotate   Predict and curate AVGs from functional annotations
+                   (HMM searches) and viral genome context.
+        de-novo    Embed query proteins with the PST genome language model
+                   and predict AVGs via nearest-neighbor search; more
+                   sensitive but does not assign specific functions.
+
+    Example:
+        apptainer run --nv CheckAMG-1.1.2.sif --help
+
+%post -c /bin/bash
+    set -e
+    export DEBIAN_FRONTEND=noninteractive
+
+    # Hazel bind-mount points
+    mkdir -p /rs1 /share /home /usr/local/usrapps
+
+    apt-get update -qq && \
+        apt-get install -y --no-install-recommends \
+            build-essential \
+            git \
+            ca-certificates && \
+        apt-get clean && \
+        rm -rf /var/lib/apt/lists/*
+
+    python3 -m pip install --no-cache-dir --upgrade pip setuptools wheel packaging uv
+
+    # torch must be installed before torch_geometric/torch_scatter/CheckAMG
+    # so the correct build is selected (per upstream README). Plain pip
+    # resolution (no --index-url override) pulls PyPI's default Linux
+    # wheel, which bundles CUDA runtime libs, so apptainer run --nv works
+    # at run time without needing an nvidia/cuda base image.
+    uv pip install --system --no-cache-dir torch==2.8.0
+    uv pip install --system --no-cache-dir torch_geometric
+    uv cache clean torch_scatter 2>/dev/null || true
+    uv pip install --system --no-cache-dir torch_scatter --no-build-isolation --no-binary torch_scatter --refresh
+    uv pip install --system --no-cache-dir faiss-cpu
+
+    uv pip install --system --no-cache-dir checkamg==1.1.2
+
+%environment
+    export LC_ALL=C.UTF-8
+    export LANG=C.UTF-8
+
+%runscript
+    exec checkamg "$@"
+
+%test
+    checkamg --help
