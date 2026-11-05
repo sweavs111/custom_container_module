@@ -26,13 +26,16 @@ From: condaforge/miniforge3:24.3.0-0
         -h         Show help menu and exit
 
     Databases:
-        VIBRANT requires ~11GB of reference databases (KEGG, Pfam, VOG)
-        that are NOT bundled in this image. Download and compile them
-        with VIBRANT_setup.py into a persistent directory (bind-mount one
-        under /rs1 or /share) before running real jobs.
+        VIBRANT requires ~11GB of reference HMM databases (KEGG, Pfam, VOG)
+        that are NOT bundled in this image. BRC maintains them on Hazel at
+        /gpfs_backup/bioinfo_data/databases/vibrant_db/v1.2.1/databases/
+        (built by brc_db_download/vibrant_db); pass that directory with -d.
+        The model and annotation tables (-m) are bundled; VIBRANT_DATA_PATH
+        points VIBRANT at them, so -m is not needed.
 
     Example:
-        apptainer run VIBRANT.sif -i contigs.fasta -t 4
+        apptainer run VIBRANT.sif -i contigs.fasta -t 4 \
+            -d /gpfs_backup/bioinfo_data/databases/vibrant_db/v1.2.1/databases/
 
 %post -c /bin/bash
     set -e
@@ -50,6 +53,10 @@ From: condaforge/miniforge3:24.3.0-0
 %environment
     export DEBIAN_FRONTEND=noninteractive
     export PATH="/opt/conda/envs/vibrant/bin:$PATH"
+    # VIBRANT_run.py builds its -d/-m defaults from this; conda's activate.d
+    # normally sets it, but apptainer exec/run never activates the env, so
+    # without it -m defaults to "None/files/" and every run fails.
+    export VIBRANT_DATA_PATH=/opt/conda/envs/vibrant/share/vibrant-1.2.1/db/
 
 %runscript
     exec VIBRANT_run.py "$@"
@@ -57,3 +64,6 @@ From: condaforge/miniforge3:24.3.0-0
 %test
     set -e
     VIBRANT_run.py -h
+    # The default -m (files/) must resolve without passing it
+    test -f "$VIBRANT_DATA_PATH/files/VIBRANT_categories.tsv"
+    test -f "$VIBRANT_DATA_PATH/files/VIBRANT_machine_model.sav"
