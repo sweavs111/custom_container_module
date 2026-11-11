@@ -1,0 +1,99 @@
+Bootstrap: docker
+From: condaforge/miniforge3:24.3.0-0
+
+%labels
+    Maintainer sdweave2@ncsu.edu
+    Source https://github.com/schneebergerlab/syri
+    Version 1.8.2
+
+%help
+    syri — identifies synteny and structural rearrangements between two chromosome-level assemblies, bundled with MUMmer4.
+
+    Why this image exists: the stock biocontainer
+    (quay.io/biocontainers/syri:1.8.2--py310h0c14f88_0) does not ship
+    MUMmer, but syri shells out to MUMmer's `show-snps` (`-s`, default
+    "show-snps" on PATH) to call SNPs/indels whenever it is given nucmer
+    output (-c <coords> -d <delta>) without --cigar. That run fails with
+    "Error in finding SNPs using show-snps". This image adds mummer4 to the
+    same environment so nucmer/delta-filter/show-coords/show-snps are all
+    on PATH alongside syri.
+
+    Version note: same syri build (bioconda 1.8.2 py310h0c14f88_0) and the
+    same pinned Python stack as the stock biocontainer it replaced in place
+    as the syri/1.8.2 module — the only difference is the added mummer4.
+
+    Usage:
+        apptainer run syri-1.8.2.sif -c <coords|sam|bam|paf> -r ref.fa -q qry.fa [options]
+
+    Key options (full list: apptainer run syri-1.8.2.sif --help):
+        -c FILE         Alignment input (nucmer .coords table, SAM, BAM, or PAF)
+        -r FILE         Reference genome FASTA
+        -q FILE         Query genome FASTA
+        -d FILE         nucmer .delta file (required with -F T and no --cigar)
+        -F {T,S,B,P}    Input format: T=table/coords (default), S=SAM, B=BAM, P=PAF
+        --dir DIR       Output directory
+        --prefix STR    Prefix for output files
+        --nc INT        Number of cores
+        -k              Keep intermediate files
+        --cigar         Get SNPs/indels from CIGAR strings instead of show-snps
+        -s PATH         show-snps executable (default: show-snps, provided here)
+        --nosnp         Skip SNP/indel calling
+        --novcf         Do not combine all outputs into one VCF file
+        --samplename S  Sample name used in the output VCF
+        --no-chrmatch   Do not auto-match chromosome IDs between genomes
+
+    Bundled MUMmer4 programs (use with `apptainer exec`):
+        nucmer, delta-filter, show-coords, show-snps, mummer, dnadiff
+
+    Example (nucmer workflow, everything inside this one container):
+        apptainer exec syri-1.8.2.sif nucmer --maxmatch -c 100 -b 500 -l 50 -t 8 ref.fa qry.fa -p out
+        apptainer exec syri-1.8.2.sif delta-filter -m -i 90 -l 100 out.delta > out.filtered.delta
+        apptainer exec syri-1.8.2.sif show-coords -THrd out.filtered.delta > out.filtered.coords
+        apptainer run  syri-1.8.2.sif -c out.filtered.coords -d out.filtered.delta -r ref.fa -q qry.fa
+
+%post -c /bin/bash
+    set -e
+    export DEBIAN_FRONTEND=noninteractive
+
+    # Hazel bind-mount points
+    mkdir -p /rs1 /share /home /usr/local/usrapps
+
+    # Pattern 4 (bioconda via miniforge3 + mamba — see CLAUDE.md lessons 2,
+    # 6, 7). No GPU-capable dependencies, so no GPU addendum applies.
+    #
+    # Runtime stack pinned to exactly match the stock biocontainer this image
+    # replaces (quay.io/biocontainers/syri:1.8.2--py310h0c14f88_0), so the
+    # only intended difference is the added mummer4. Unpinned, the solve
+    # drifted to python 3.11 / pandas 3.1.1 / numpy 2.4.6 / scipy 1.17.1 —
+    # pandas 3 is a breaking major release (same reason vcontact3 pins a
+    # pandas-2 stack). syri is pinned to the biocontainer's exact build string.
+    mamba create -n syri -y -c conda-forge -c bioconda \
+        "syri=1.8.2=py310h0c14f88_0" \
+        mummer4=4.0.1 \
+        python=3.10.20 \
+        pandas=2.3.3 \
+        numpy=2.2.6 \
+        scipy=1.15.2 \
+        pysam=0.24.0
+    mamba clean -afy
+
+%environment
+    export DEBIAN_FRONTEND=noninteractive
+    export PATH="/opt/conda/envs/syri/bin:$PATH"
+
+%runscript
+    exec syri "$@"
+
+%test
+    # Multi-command test: set -e so a failing `syri --help` can't be masked
+    # by a later passing line.
+    set -e
+    # %environment is not sourced for %test (see EDTA's def) — set PATH here.
+    export PATH="/opt/conda/envs/syri/bin:$PATH"
+    syri --help
+    # The whole point of this image: syri's default `-s show-snps` must
+    # resolve, along with the rest of the nucmer toolchain.
+    for prog in show-snps nucmer delta-filter show-coords; do
+        command -v "$prog" || { echo "ERROR: $prog not on PATH" >&2; exit 1; }
+    done
+    nucmer --version
