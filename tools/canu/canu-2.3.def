@@ -4,7 +4,7 @@ From: quay.io/biocontainers/canu:2.3--h3fb4750_0
 %labels
     Maintainer sdweave2@ncsu.edu
     Source https://github.com/marbl/canu
-    Version 2.3_patch
+    Version 2.3
 
 %help
     canu — single-molecule sequencing assembler for high-noise long reads
@@ -12,14 +12,18 @@ From: quay.io/biocontainers/canu:2.3--h3fb4750_0
 
     THIS IS A LOCALLY-PATCHED IMAGE, not the vanilla biocontainer. It is
     the stock quay.io/biocontainers/canu:2.3--h3fb4750_0 image (the same
-    image behind the existing canu/2.3 module) with exactly one file
-    added: /usr/bin/command. Canu itself, its Perl code, Java, and every
-    other tool in the image are byte-for-byte the upstream biocontainer.
+    image the canu/2.3 module originally shipped) with exactly one file
+    added: /usr/bin/command (plus the empty Hazel bind-mount dirs).
+    Canu itself, its Perl code, Java, and every other tool in the image
+    are unchanged from the upstream biocontainer.
 
-    Deployed as a SEPARATE version (2.3_patch) alongside the existing
-    canu/2.3 module on purpose — the existing module is left untouched
-    until this build has been tested on real user data. Load explicitly
-    with `module load canu/2.3_patch`.
+    Replaced the stock image in place as the canu/2.3 module
+    (2026-11-16), deployed under the ORIGINAL image filename
+    quay.io_biocontainers_canu:2.3--h3fb4750_0.sif so the existing
+    modulefile and wrapper did not change. Despite that filename, the
+    deployed image is this patched build. The stock image is backed up
+    in custom_container_module/tools/canu/pre_deploy_backup_20261116/.
+    Re-pulling the plain biocontainer tag will NOT carry this fix.
 
     The bug: canu's checkJava() (lib/perl5/site_perl/canu/Defaults.pm,
     ~line 1078) resolves java with a Perl backtick:
@@ -45,18 +49,27 @@ From: quay.io/biocontainers/canu:2.3--h3fb4750_0
     than bind-mounted by the module) so it also works for users who run
     the .sif directly with `apptainer exec`.
 
-    Workaround on the unpatched canu/2.3 module: corOverlapper=minimap
-    skips checkJava() entirely for -nanopore runs (changes the read-
-    correction overlapper from the default MHAP).
+    Workaround on the stock image: corOverlapper=minimap skips
+    checkJava() entirely for -nanopore runs (changes the read-correction
+    overlapper from the default MHAP).
 
     Not yet reported upstream (marbl/canu) — the real fix there is to
     make that backtick go through a shell.
 
+    No %runscript on purpose (deviates from this repo's usual
+    `exec <tool> "$@"` convention): this image must stay functionally
+    identical to the stock image it replaced in place, so it keeps the
+    biocontainer's own OCI runscript, which Apptainer generates from the
+    docker base when %runscript is absent. `apptainer run <img> <cmd>`
+    therefore runs <cmd> via /usr/local/env-execute, and a bare
+    `apptainer run <img>` opens /bin/sh, exactly as before. The canu/2.3
+    module wrapper uses `exec canu` and is unaffected either way.
+
     Usage:
-        apptainer run canu-2.3_patch.sif [options] -p <prefix> -d <dir> genomeSize=<n> -nanopore <reads.fq>
+        apptainer exec canu-2.3.sif canu [options] -p <prefix> -d <dir> genomeSize=<n> -nanopore <reads.fq>
 
     Example:
-        apptainer run canu-2.3_patch.sif -p asm -d asm_out genomeSize=116m \
+        apptainer exec canu-2.3.sif canu -p asm -d asm_out genomeSize=116m \
             minReadLength=10000 useGrid=false -nanopore reads.fq.gz
 
     See https://canu.readthedocs.io/en/latest/ for full documentation.
@@ -84,9 +97,6 @@ CMDEOF
     # Fail the build here, not at a user's runtime, if the shim doesn't
     # resolve java the way canu's checkJava() calls it.
     perl -e 'my $j = `command -v java`; $j =~ s/\s+$//; exit($j =~ m{/java$} ? 0 : 1)'
-
-%runscript
-    exec canu "$@"
 
 %test
     # Exercises the real failing code path, not just `canu -version`
