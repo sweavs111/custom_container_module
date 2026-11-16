@@ -17,12 +17,10 @@ From: quay.io/biocontainers/canu:2.3--h3fb4750_0
     Canu itself, its Perl code, Java, and every other tool in the image
     are unchanged from the upstream biocontainer.
 
-    Replaced the stock image in place as the canu/2.3 module
-    (2026-11-16), deployed under the ORIGINAL image filename
-    quay.io_biocontainers_canu:2.3--h3fb4750_0.sif so the existing
-    modulefile and wrapper did not change. Despite that filename, the
-    deployed image is this patched build. The stock image is backed up
-    in custom_container_module/tools/canu/pre_deploy_backup_20261116/.
+    Replaced the stock image (quay.io_biocontainers_canu:2.3--h3fb4750_0.sif)
+    as the canu/2.3 module on 2026-11-16, deployed as canu-2.3.sif; the
+    module name/version did not change. The stock image is backed up in
+    custom_container_module/tools/canu/pre_deploy_backup_20261116/.
     Re-pulling the plain biocontainer tag will NOT carry this fix.
 
     The bug: canu's checkJava() (lib/perl5/site_perl/canu/Defaults.pm,
