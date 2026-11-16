@@ -32,8 +32,11 @@ for arg in "$@"; do
 done
 source "$SCRIPT_DIR/config.sh"
 source "$SCRIPT_DIR/def_lib.sh"
-if [[ -z "${CONTAINER_MOD:-}" || ! -x "$CONTAINER_MOD" ]]; then
-    echo "ERROR: CONTAINER_MOD not set or not executable — check config.sh" >&2
+# container-mod is only used by the deploy step — check it up front (so a
+# bad path fails before a long build, not after), but only when deploying,
+# so DEPLOY=false builds work for users who can't reach container-mod.
+if [[ "$DEPLOY" == true ]] && [[ -z "${CONTAINER_MOD:-}" || ! -x "$CONTAINER_MOD" ]]; then
+    echo "ERROR: CONTAINER_MOD not set or not executable — check config.sh (or set DEPLOY=false)" >&2
     exit 1
 fi
 module load apptainer
