@@ -1,0 +1,119 @@
+Bootstrap: docker
+From: quay.io/biocontainers/canu:2.3--h3fb4750_0
+
+%labels
+    Maintainer sdweave2@ncsu.edu
+    Source https://github.com/marbl/canu
+    Version 2.3_patch
+
+%help
+    canu — single-molecule sequencing assembler for high-noise long reads
+    (PacBio CLR/HiFi, Oxford Nanopore).
+
+    THIS IS A LOCALLY-PATCHED IMAGE, not the vanilla biocontainer. It is
+    the stock quay.io/biocontainers/canu:2.3--h3fb4750_0 image (the same
+    image behind the existing canu/2.3 module) with exactly one file
+    added: /usr/bin/command. Canu itself, its Perl code, Java, and every
+    other tool in the image are byte-for-byte the upstream biocontainer.
+
+    Deployed as a SEPARATE version (2.3_patch) alongside the existing
+    canu/2.3 module on purpose — the existing module is left untouched
+    until this build has been tested on real user data. Load explicitly
+    with `module load canu/2.3_patch`.
+
+    The bug: canu's checkJava() (lib/perl5/site_perl/canu/Defaults.pm,
+    ~line 1078) resolves java with a Perl backtick:
+        $java = `command -v $java`;
+    That string has no shell metacharacters, so Perl skips /bin/sh and
+    execs the first word directly as a program. `command` is a POSIX
+    shell builtin, not a program — it only works where the OS ships a
+    /usr/bin/command helper (RHEL/Rocky do; this Debian 12 biocontainer
+    does not). In the stock image this fails with:
+        Can't exec "command": No such file or directory at .../Defaults.pm line 1078.
+        readline() on closed filehandle F at .../Defaults.pm line 1096.
+        ERROR:  mhap overlapper requires java version at least 1.8.0; you have unknown (from '').
+    i.e. canu never finds java at all, even though OpenJDK 23 is present
+    at /usr/local/bin/java. Any run that uses the MHAP overlapper (the
+    default for -nanopore read correction) dies at configure time.
+    Passing java=<path> does not help: the path still goes through the
+    same `command -v` backtick first.
+
+    The fix: add /usr/bin/command as a two-line /bin/sh script that calls
+    the builtin (`command "$@"`). Inside sh, `command` resolves to the
+    builtin before PATH, so the script cannot recurse. This is the same
+    helper RHEL ships for the same reason. Baked into the image (rather
+    than bind-mounted by the module) so it also works for users who run
+    the .sif directly with `apptainer exec`.
+
+    Workaround on the unpatched canu/2.3 module: corOverlapper=minimap
+    skips checkJava() entirely for -nanopore runs (changes the read-
+    correction overlapper from the default MHAP).
+
+    Not yet reported upstream (marbl/canu) — the real fix there is to
+    make that backtick go through a shell.
+
+    Usage:
+        apptainer run canu-2.3_patch.sif [options] -p <prefix> -d <dir> genomeSize=<n> -nanopore <reads.fq>
+
+    Example:
+        apptainer run canu-2.3_patch.sif -p asm -d asm_out genomeSize=116m \
+            minReadLength=10000 useGrid=false -nanopore reads.fq.gz
+
+    See https://canu.readthedocs.io/en/latest/ for full documentation.
+
+%post -c /bin/bash
+    set -e
+    set -o pipefail
+
+    # Hazel bind-mount points
+    mkdir -p /rs1 /share /home /usr/local/usrapps
+
+    # BRC fix: give Perl's no-shell backtick exec path a real `command`
+    # program to find (see %help). Lives in /usr/bin to match where RHEL
+    # ships the same helper; /bin is a symlink to usr/bin on this
+    # usr-merged Debian 12 base, so /bin/command resolves too.
+    cat > /usr/bin/command << 'CMDEOF'
+#!/bin/sh
+# BRC shim: lets programs that exec `command` directly (e.g. Perl
+# backticks with no shell metacharacters) reach the POSIX sh builtin.
+# Inside sh, `command` is the builtin, so this does not recurse.
+command "$@"
+CMDEOF
+    chmod 755 /usr/bin/command
+
+    # Fail the build here, not at a user's runtime, if the shim doesn't
+    # resolve java the way canu's checkJava() calls it.
+    perl -e 'my $j = `command -v java`; $j =~ s/\s+$//; exit($j =~ m{/java$} ? 0 : 1)'
+
+%runscript
+    exec canu "$@"
+
+%test
+    # Exercises the real failing code path, not just `canu -version`
+    # (which passes on the broken stock image too):
+    # 1. the exact Perl backtick form canu uses must resolve java;
+    perl -e 'my $j = `command -v java`; $j =~ s/\s+$//; exit($j =~ m{/java$} ? 0 : 1)'
+    # 2. canu's own configure step must detect java. The run is expected
+    #    to exit nonzero afterwards (tiny dummy input / build-host resource
+    #    limits), so check the configure output, not the exit code.
+    #
+    # Do NOT trust an inherited TMPDIR here: apptainer build runs %test
+    # with host environment variables (including TMPDIR) passed through,
+    # but the build-time root filesystem is read-only and only has the
+    # directories %post explicitly created (/rs1 /share /home
+    # /usr/local/usrapps) -- not a full mirror of the host's /share tree.
+    # A host TMPDIR like /share/brc/<user>/tmp doesn't exist inside the
+    # image at build time, so mktemp silently fails, $tmp ends up empty,
+    # and writes meant for "$tmp/tiny.fq" land on "/" instead, which is
+    # read-only. Force a known-writable location and check mktemp's exit
+    # status instead of assuming it succeeded.
+    unset TMPDIR
+    tmp=$(mktemp -d /tmp/canu_test.XXXXXX) || { echo "ERROR: mktemp failed to create a test directory under /tmp" >&2; exit 1; }
+    printf '@r1\nACGTACGTACGTACGTACGT\n+\nIIIIIIIIIIIIIIIIIIII\n' > "$tmp/tiny.fq"
+    canu -p t -d "$tmp/out" genomeSize=1m useGrid=false -nanopore "$tmp/tiny.fq" > "$tmp/canu.log" 2>&1 || true
+    status=0
+    grep -q -- "-- Detected Java" "$tmp/canu.log" || status=1
+    grep -q "Failed Java version check" "$tmp/canu.log" && status=1
+    [ "$status" -eq 0 ] || cat "$tmp/canu.log"
+    rm -rf "$tmp"
+    exit "$status"
