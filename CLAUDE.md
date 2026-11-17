@@ -268,3 +268,14 @@ replaced by a stub (so it never runs a real build or calls the real
 iterating on the retry loop itself.
 
 The smoke build runs a real `apptainer build` against `tests/fixtures/smoketest.def` (debian-slim, `DEPLOY=false`) in an isolated temp directory — needs `module load apptainer` + internet (login node only), but never touches `container-mod`, this repo's `tools/`, or `container_build.log`. This is separate from validating a new tool's `.def` (lesson 5 above) — it verifies the wrapper script logic itself, not any one tool's install steps.
+
+## Publishing to ghcr.io (PUSH / push_sif.sh)
+
+With `PUSH=true` (config.sh; default false, independent of `DEPLOY`), `apptainer_build.sh` checks `ghcr.io/$GHCR_NAMESPACE/<tool lowercased>:<Version>` before building, and pushes the `.sif` as an ORAS artifact after the deploy step, before the local `.sif` is removed. `push_sif.sh <sif> <tool> <version>` also works standalone, e.g. for images already in the public image dir.
+
+- Auth comes from a prior `apptainer registry login --username <user> oras://ghcr.io`. `push_sif.sh` reads the stored credential from `~/.docker/config.json` for its tag check and passes it to curl on stdin, never as an argument.
+- Published tags are never replaced. An existing tag, or one that can't be checked, fails the push unless `--force_ghcr_overwrite` (or `GHCR_OVERWRITE=true`) is given. A rebuild after a retry-loop `.def` fix keeps its Version label but changes its contents, so it needs a new Version label or a deliberate overwrite.
+- A failed push after a successful deploy exits nonzero and keeps the local `.sif`. The error message gives the exact `push_sif.sh` command to retry.
+- The tests pin `PUSH=false` so they can never publish.
+- New GHCR packages are private, and visibility can't be changed through the API (PATCH returns 404, verified 2026-11-17). Make each package public once in its GitHub settings.
+- Sibling repos `../custom_containeR` and `../containerPy` have their own `push.sh` and push to the same namespace with `r-`/`py-` prefixes, so names never collide.

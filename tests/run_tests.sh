@@ -283,6 +283,7 @@ else
 
         sed -i "s|^GITHUB_URL=.*|GITHUB_URL=\"https://github.com/brc-smoketest/$tool\"|" config.sh
         sed -i 's|^DEPLOY=.*|DEPLOY=false|' config.sh
+        sed -i 's|^PUSH=.*|PUSH=false|' config.sh
 
         local build_tmp
         build_tmp=$(mktemp -d)

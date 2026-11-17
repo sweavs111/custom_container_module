@@ -37,11 +37,12 @@ URLS_FILE=""
 for arg in "$@"; do
     case "$arg" in
         --force) export FORCE=true ;;
+        --force_ghcr_overwrite) export GHCR_OVERWRITE=true ;;   # passed through via env (PUSH=true only)
         *) URLS_FILE="$arg" ;;
     esac
 done
 if [[ -z "$URLS_FILE" || ! -f "$URLS_FILE" ]]; then
-    echo "Usage: $0 [--force] <urls_file>" >&2
+    echo "Usage: $0 [--force] [--force_ghcr_overwrite] <urls_file>" >&2
     exit 1
 fi
 

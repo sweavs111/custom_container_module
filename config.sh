@@ -5,6 +5,8 @@
 SINGLE_GITHUB_URL="https://github.com/ZhaoXM-Lab/VirRep"
 DEPLOY="${DEPLOY:-true}"   # false to skip container-mod module generation
 FORCE="${FORCE:-false}"    # true (or --force) skips review of a newly generated .def — for unattended xfer/sbatch runs only
+PUSH="${PUSH:-false}"      # true to also publish the built .sif to ghcr.io (see push_sif.sh) — independent of DEPLOY
+GHCR_OVERWRITE="${GHCR_OVERWRITE:-false}"   # true (or --force_ghcr_overwrite) allows replacing an existing ghcr tag
 
 # Do not edit directly — edit SINGLE_GITHUB_URL above instead.
 GITHUB_URL="${GITHUB_URL:-$SINGLE_GITHUB_URL}"
@@ -25,6 +27,11 @@ CONTAINER_MOD="/rs1/shares/brc/admin/tools/container-mod_v1/container-mod"
 
 # container-mod profile to use for deployment
 CONTAINER_MOD_PROFILE="brc"
+
+# GitHub Container Registry namespace for PUSH=true / push_sif.sh.
+# Images land at oras://ghcr.io/<GHCR_NAMESPACE>/<tool, lowercased>:<version>.
+# Auth comes from a prior `apptainer registry login --username <user> oras://ghcr.io`.
+GHCR_NAMESPACE="sweavs111"
 
 # Fallback path to the claude CLI (used if 'claude' is not on PATH)
 CLAUDE_BIN="/home/sdweave2/.local/bin/claude"

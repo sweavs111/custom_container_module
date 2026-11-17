@@ -184,7 +184,7 @@ run_scenario() {
     printf '%s' "$FIXTURE_DEF" > "$BUILD_TMP/tools/retrytesttool/retrytesttool.def"
 
     ( cd "$BUILD_TMP" && printf '%b' "$stdin_text" | \
-        GITHUB_URL="https://github.com/example/retrytesttool" DEPLOY=false \
+        GITHUB_URL="https://github.com/example/retrytesttool" DEPLOY=false PUSH=false \
         "$SCRIPTS_DIR/apptainer_build.sh" )
     SCENARIO_EXIT=$?
 }
@@ -291,7 +291,7 @@ run_generate_scenario() {
     export MOCK_SANDBOX_CMD_RESOLVES="yes"
     export MOCK_FIX_MODE="good"
     SCENARIO_OUT=$( cd "$BUILD_TMP" && printf '%b' "$stdin_text" | \
-        GITHUB_URL="https://github.com/example/retrytesttool" DEPLOY=false \
+        GITHUB_URL="https://github.com/example/retrytesttool" DEPLOY=false PUSH=false \
         "$SCRIPTS_DIR/apptainer_build.sh" "$@" 2>&1 )
     SCENARIO_EXIT=$?
 }

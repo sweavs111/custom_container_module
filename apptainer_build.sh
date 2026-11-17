@@ -24,10 +24,14 @@ SCRIPT_DIR="${SLURM_SUBMIT_DIR:-$(dirname "$0")}"
 # --force: skip the review prompt for a newly generated .def (for unattended
 # xfer/sbatch runs, where nothing can answer it). Does NOT skip the second
 # gate — the diff review when the retry loop modified the .def.
+#
+# --force_ghcr_overwrite: with PUSH=true, allow replacing an existing
+# ghcr.io tag (see push_sif.sh). Without it, an existing tag is an error.
 for arg in "$@"; do
     case "$arg" in
         --force) export FORCE=true ;;
-        *) echo "Usage: $0 [--force]" >&2; exit 1 ;;
+        --force_ghcr_overwrite) export GHCR_OVERWRITE=true ;;
+        *) echo "Usage: $0 [--force] [--force_ghcr_overwrite]" >&2; exit 1 ;;
     esac
 done
 source "$SCRIPT_DIR/config.sh"
@@ -188,6 +192,17 @@ fi
 SIF="tools/${TOOL}/${TOOL}-${VERSION}"
 SIF_FILE="${SIF}.sif"
 
+### --- Pre-flight: ghcr tag check (PUSH=true only) ---
+# Fail before a long build, not after it, if the tag is already taken (and
+# overwrite wasn't requested) or credentials/network to ghcr.io are broken.
+# push_sif.sh re-checks right before the real push.
+if [[ "$PUSH" == true ]]; then
+    "$SCRIPT_DIR/push_sif.sh" --check "$TOOL" "$VERSION" || {
+        echo "ERROR: ghcr.io pre-flight check failed for ${TOOL}:${VERSION} — not building (set PUSH=false to build without publishing)" >&2
+        exit 1
+    }
+fi
+
 ### --- Pre-flight: generate container-mod metadata if missing ---
 if [[ "$DEPLOY" == true && ! -f "$REPOS_FILE" ]]; then
     "$SCRIPT_DIR/create_repos_entry.sh" "$DEF" "$REPOS_FILE" || exit 1
@@ -308,7 +323,24 @@ if [[ "$DEPLOY" == true ]]; then
     fi
 
     "$SCRIPT_DIR/patch_log_hook.sh" "$TOOL_LOWER" "$VERSION"
+fi
 
+### --- Publish to ghcr.io (PUSH=true only) ---
+# Runs after deploy and before the local .sif is removed. If the push fails
+# after a successful deploy, the module stays registered, but the local
+# .sif is kept and we exit nonzero so batch_build.sh reports a FAIL and the
+# push can be retried by hand with push_sif.sh.
+if [[ "$PUSH" == true ]]; then
+    run_logged "$SCRIPT_DIR/push_sif.sh" "$SIF_FILE" "$TOOL" "$VERSION"
+    PUSH_EXIT=$?
+    if [[ $PUSH_EXIT -ne 0 ]]; then
+        echo "ERROR: push to ghcr.io failed (exit $PUSH_EXIT)$([[ "$DEPLOY" == true ]] && echo ' — module WAS deployed') — local .sif kept at $SIF_FILE" | tee -a container_build.log
+        echo "Retry with: $SCRIPT_DIR/push_sif.sh $SIF_FILE $TOOL $VERSION" | tee -a container_build.log
+        exit $PUSH_EXIT
+    fi
+fi
+
+if [[ "$DEPLOY" == true ]]; then
     rm "$SIF_FILE"
     echo "Removed local copy: $SIF_FILE"
 fi
