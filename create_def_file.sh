@@ -14,7 +14,8 @@
 # find or pick a repo. Requiring the exact repo URL up front removes the
 # ambiguity of name-based search picking the wrong same-named repo. The
 # tool/module name is always derived from the URL itself (see
-# derive_tool_name in config.sh), never typed separately. The one place a
+# derive_tool_name in config.sh), never typed separately — unless TOOL_NAME
+# is set to override it (resolve_tool_name, config.sh). The one place a
 # name is used is a PyPI *fact* lookup (version/summary) on the
 # already-derived name, cross-validated against this same repo URL — never
 # used to discover or choose a repo, only to avoid Claude inventing a
@@ -45,7 +46,7 @@ if [[ $# -ne 1 || "$1" != https://github.com/*/* ]]; then
     exit 1
 fi
 GITHUB_URL="${1%/}"
-TOOL=$(derive_tool_name "$GITHUB_URL")
+TOOL=$(resolve_tool_name "$GITHUB_URL") || exit 1   # honors TOOL_NAME override
 TOOL_LOWER=$(echo "$TOOL" | tr '[:upper:]' '[:lower:]')
 DEF_DIR="./tools/$TOOL"
 TEMPLATE="$(dirname "$0")/template.def"

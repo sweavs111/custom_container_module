@@ -54,6 +54,17 @@ check "monorepo subdir" "$(derive_tool_name 'https://github.com/RasmussenLab/vam
 check "monorepo subdir, trailing slash" "$(derive_tool_name 'https://github.com/RasmussenLab/vamb/tree/main/subdir/')" "subdir"
 
 echo
+echo "== resolve_tool_name / TOOL_NAME override (config.sh) =="
+check "no override -> derived"  "$(TOOL_NAME='' resolve_tool_name 'https://github.com/mummer4/mummer')"        "mummer"
+check "override wins"           "$(TOOL_NAME=mummer4 resolve_tool_name 'https://github.com/mummer4/mummer')"   "mummer4"
+check "override, mixed case/._-" "$(TOOL_NAME=Foo_bar-1.x resolve_tool_name 'https://github.com/a/b')"         "Foo_bar-1.x"
+check "rejects slash"           "$(TOOL_NAME='../evil' resolve_tool_name 'https://github.com/a/b' 2>/dev/null; echo rc=$?)" "rc=1"
+check "rejects space"           "$(TOOL_NAME='a b' resolve_tool_name 'https://github.com/a/b' 2>/dev/null; echo rc=$?)"     "rc=1"
+check "rejects leading dash"    "$(TOOL_NAME='-x' resolve_tool_name 'https://github.com/a/b' 2>/dev/null; echo rc=$?)"      "rc=1"
+check "config.sh keeps env TOOL_NAME" "$(TOOL_NAME=keepme bash -c 'source config.sh; echo $TOOL_NAME')" "keepme"
+check "no derive_tool_name left in callers" "$(grep -l 'derive_tool_name \"' apptainer_build.sh create_def_file.sh batch_build.sh 2>/dev/null | wc -l)" "0"
+
+echo
 echo "== Version-label extraction (apptainer_build.sh's grep|awk) =="
 VERSION_TMP=$(mktemp)
 cat > "$VERSION_TMP" <<'EOF'

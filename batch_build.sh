@@ -14,6 +14,8 @@
 #
 # Usage: ./batch_build.sh [--force] urls.txt
 # urls.txt: one GitHub URL per line; '#' comments and blank lines skipped.
+#           Optional second column overrides the tool/module name (TOOL_NAME):
+#             https://github.com/mummer4/mummer  mummer4
 #
 # DEPLOY is forced true for every URL. For a DEPLOY=false dry run, use apptainer_build.sh directly.
 
@@ -55,7 +57,7 @@ declare -a OK=() FAILED=() SKIPPED=() NEEDS_REVIEW=()
 # considered done and still goes through apptainer_build.sh normally.
 already_deployed() {
     local url="$1" tool def version
-    tool=$(derive_tool_name "$url")
+    tool=$(resolve_tool_name "$url") || return 1
     def=$(find_tool_def "$tool") || return 1
     version=$(extract_def_version "$def")
     [[ -n "$version" ]] || return 1
@@ -73,6 +75,14 @@ while IFS= read -r -u 3 URL || [[ -n "$URL" ]]; do
     URL="${URL%%#*}"                  # strip trailing comments
     URL="$(echo -n "$URL" | xargs)"   # trim whitespace
     [[ -z "$URL" ]] && continue
+    # Optional second column = TOOL_NAME override. Set (or cleared) per line so
+    # one line's override, or an outer environment TOOL_NAME, never leaks into another.
+    read -r URL LINE_TOOL_NAME EXTRA <<< "$URL"
+    if [[ -n "$EXTRA" ]]; then
+        echo "ERROR: too many columns (expected: <url> [tool_name]): $URL $LINE_TOOL_NAME $EXTRA" >&2
+        FAILED+=("$URL"); continue
+    fi
+    export TOOL_NAME="$LINE_TOOL_NAME"
 
     echo ""
     echo "=================================================================="
@@ -85,7 +95,7 @@ while IFS= read -r -u 3 URL || [[ -n "$URL" ]]; do
     echo "Building: $URL"
     echo "=================================================================="
 
-    GITHUB_URL="$URL" DEPLOY=true ./apptainer_build.sh
+    GITHUB_URL="$URL" TOOL_NAME="$TOOL_NAME" DEPLOY=true ./apptainer_build.sh
     STATUS=$?
 
     if [[ $STATUS -eq 0 ]]; then

@@ -46,7 +46,17 @@ unrelated projects — so requiring the exact URL up front removes that
 ambiguity entirely. The tool/module name (`tools/<ToolName>/`, `.sif`
 filename, container-mod registration name) is always derived from the URL
 (`derive_tool_name` in `config.sh` — the repo's own name, case preserved)
-and is never typed separately, so it can't drift from the URL it came from.
+and is normally never typed separately, so it can't drift from the URL it came from.
+
+The one exception is the `TOOL_NAME` override, for when the module name must
+differ from the repo name (e.g. `github.com/mummer4/mummer` → module
+`mummer4`, not `mummer`). Set it per run via the environment
+(`TOOL_NAME=mummer4 GITHUB_URL=https://github.com/mummer4/mummer ./apptainer_build.sh`)
+or as an optional second column in a `batch_build.sh` URL list
+(`https://github.com/mummer4/mummer  mummer4`). Every script resolves the name
+through `resolve_tool_name` (`config.sh`), which validates the override and
+otherwise falls back to `derive_tool_name`. `batch_build.sh` sets or clears
+`TOOL_NAME` on every line, so one line's override can't leak into the next.
 
 1. Edit the two variables at the top of `config.sh`:
    ```bash

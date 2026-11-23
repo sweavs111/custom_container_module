@@ -120,7 +120,7 @@ if [[ -z "${GITHUB_URL:-}" ]]; then
     echo "ERROR: GITHUB_URL not set — edit it at the top of config.sh" >&2
     exit 1
 fi
-TOOL=$(derive_tool_name "$GITHUB_URL")
+TOOL=$(resolve_tool_name "$GITHUB_URL") || exit 1
 
 ### --- Derived paths ---
 TOOL_LOWER=$(echo "$TOOL" | tr '[:upper:]' '[:lower:]')
