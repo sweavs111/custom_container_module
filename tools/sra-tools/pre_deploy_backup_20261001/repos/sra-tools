@@ -1,6 +1,0 @@
-Description: The SRA Toolkit and SDK from NCBI is a collection of tools and libraries for using data in the INSDC Sequence Read Archives.
-Home Page: https://github.com/ncbi/sra-tools
-Programs: abi-dump,align-cache,align-info,bam-load,cache-mgr,cg-load,fasterq-dump,fasterq-dump-orig,fastq-dump,fastq-dump-orig,illumina-dump,kar,kdbmeta,kget,latf-load,md5cp,prefetch,prefetch-orig,rcexplain,read-filter-redact,sam-dump,sam-dump-orig,sff-dump,sra-pileup,sra-pileup-orig,sra-sort,sra-sort-cg,sra-stat,srapath,srapath-orig,sratools,test-sra,vdb-config,vdb-copy,vdb-decrypt,vdb-diff,vdb-dump,vdb-encrypt,vdb-lock,vdb-passwd,vdb-unlock,vdb-validate
-
-version("3.4.1", uri="docker://quay.io/biocontainers/sra-tools:3.4.1--2_linux_64")
-version("pl5262", uri="docker://quay.io/biocontainers/sra-tools:2.11.0--pl5262h314213e_0")
