@@ -1,0 +1,5 @@
+Description: Mummer4 is a versatile alignment tool for DNA and protein sequences.
+Home Page: https://github.com/mummer4/mummer
+Programs: annotate,combineMUMs,delta-filter,delta2vcf,dnadiff,exact-tandems,mummer,mummerplot,nucmer,promer,repeat-match,show-aligns,show-coords,show-diff,show-snps,show-tiling
+
+version("pl5262", uri="docker://quay.io/biocontainers/mummer4:4.0.0rc1--pl5262h1b792b2_1")

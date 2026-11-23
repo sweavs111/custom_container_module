@@ -1,0 +1,6 @@
+Description: Syri compares alignments between two chromosome-level assemblies and identifies synteny and structural rearrangements.
+Home Page: https://github.com/schneebergerlab/syri
+Programs: syri
+
+version("1.8.2", uri="docker://quay.io/biocontainers/syri:1.8.2--py310h0c14f88_0")
+version("1.6", uri="")

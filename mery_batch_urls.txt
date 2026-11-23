@@ -1,0 +1,20 @@
+# Corrected batch list for mery's container requests (mery_container_request_6.18.26.txt)
+# Excluded from this list, with reasons:
+#   - https://cge.food.dtu.dk/services/SourceFinder/  -> not a GitHub repo; pipeline can't process it (per user decision)
+#   - Shamir-Lab/Recycler -> already deployed via existing quay.io/biocontainers/recycler:0.7 module, skipping rebuild
+#   - Celestial-Bai/INHERIT -> already built & deployed (module "inherit" v5ea758c0), skipping rebuild
+#   - RasmussenLab/vamb/.../workflow_PlasMAAG -> reusing existing tools/PlasMAAG/PlasMAAG.def instead (per user decision); built directly, not via this list
+#   - bhattlab/phanta -> case-normalized to /Phanta so it maps to the existing tools/Phanta/Phanta.def instead of creating a duplicate tools/phanta/
+#   - zhenchengfang/PlasGUN -> no installable source in the repo (prebuilt MATLAB Runtime release, no setup.py/bioconda/importable .py files); moved to a separate workspace to handle by hand, outside this pipeline
+
+https://github.com/bhattlab/Phanta
+https://github.com/Shamir-Lab/PlasClass
+https://github.com/ablab/plasmidVerify
+https://github.com/michaelkyu/PlasX
+https://github.com/Shamir-Lab/SCAPP
+https://github.com/gussow/seeker
+https://github.com/liuql2019/VFM
+https://github.com/AnantharamanLab/VIBRANT
+https://github.com/alyzart22/VirDetect-AI
+https://github.com/jessieren/VirFinder
+https://github.com/cmmr/virmap
