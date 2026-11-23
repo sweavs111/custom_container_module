@@ -16,11 +16,13 @@ From: condaforge/miniforge3:24.3.0-0
     output (-c <coords> -d <delta>) without --cigar. That run fails with
     "Error in finding SNPs using show-snps". This image adds mummer4 to the
     same environment so nucmer/delta-filter/show-coords/show-snps are all
-    on PATH alongside syri.
+    on PATH alongside syri. It also adds MUMmer's optional plotting
+    utilities (gnuplot, fig2dev, xfig) so mummerplot works.
 
     Version note: same syri build (bioconda 1.8.2 py310h0c14f88_0) and the
     same pinned Python stack as the stock biocontainer it replaced in place
-    as the syri/1.8.2 module — the only difference is the added mummer4.
+    as the syri/1.8.2 module. The only differences are the added mummer4
+    and the OS-level plotting utilities (gnuplot, fig2dev, xfig from apt).
 
     Usage:
         apptainer run syri-1.8.2.sif -c <coords|sam|bam|paf> -r ref.fa -q qry.fa [options]
@@ -43,7 +45,13 @@ From: condaforge/miniforge3:24.3.0-0
         --no-chrmatch   Do not auto-match chromosome IDs between genomes
 
     Bundled MUMmer4 programs (use with `apptainer exec`):
-        nucmer, delta-filter, show-coords, show-snps, mummer, dnadiff
+        nucmer, delta-filter, show-coords, show-snps, mummer, dnadiff,
+        mummerplot
+
+    Plotting utilities (MUMmer's optional deps, Ubuntu 20.04 apt builds):
+        gnuplot (gnuplot-x11; png/postscript/x11 terminals), fig2dev, xfig
+        mummerplot --png / --postscript work headless; the interactive x11
+        terminal and xfig need X11 forwarding (ssh -X).
 
     Example (nucmer workflow, everything inside this one container):
         apptainer exec syri-1.8.2.sif nucmer --maxmatch -c 100 -b 500 -l 50 -t 8 ref.fa qry.fa -p out
@@ -57,6 +65,16 @@ From: condaforge/miniforge3:24.3.0-0
 
     # Hazel bind-mount points
     mkdir -p /rs1 /share /home /usr/local/usrapps
+
+    # MUMmer's optional plotting utilities (README minimums: gnuplot 4.0,
+    # fig2dev 3.2.3, xfig 3.2). Installed from apt, not conda: fig2dev and
+    # xfig aren't on conda-forge, and keeping gnuplot out of the conda solve
+    # leaves the pinned syri stack below untouched. mummerplot finds gnuplot
+    # on PATH (/usr/bin). gnuplot-x11 = png/postscript + x11 terminals,
+    # without pulling in Qt.
+    apt-get update
+    apt-get install -y --no-install-recommends gnuplot-x11 fig2dev xfig
+    rm -rf /var/lib/apt/lists/*
 
     # Pattern 4 (bioconda via miniforge3 + mamba — see CLAUDE.md lessons 2,
     # 6, 7). No GPU-capable dependencies, so no GPU addendum applies.
@@ -93,7 +111,9 @@ From: condaforge/miniforge3:24.3.0-0
     syri --help
     # The whole point of this image: syri's default `-s show-snps` must
     # resolve, along with the rest of the nucmer toolchain.
-    for prog in show-snps nucmer delta-filter show-coords; do
+    for prog in show-snps nucmer delta-filter show-coords mummerplot gnuplot fig2dev xfig; do
         command -v "$prog" || { echo "ERROR: $prog not on PATH" >&2; exit 1; }
     done
     nucmer --version
+    gnuplot --version
+    fig2dev -V
