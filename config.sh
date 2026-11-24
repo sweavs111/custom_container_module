@@ -51,7 +51,7 @@ CONTAINER_MOD_PROFILE="brc"
 # GitHub Container Registry namespace for PUSH=true / push_sif.sh.
 # Images land at oras://ghcr.io/<GHCR_NAMESPACE>/<tool, lowercased>:<version>.
 # Auth comes from a prior `apptainer registry login --username <user> oras://ghcr.io`.
-GHCR_NAMESPACE="sweavs111"
+GHCR_NAMESPACE="hurwitzlab"
 
 # Fallback path to the claude CLI (used if 'claude' is not on PATH)
 CLAUDE_BIN="/home/sdweave2/.local/bin/claude"

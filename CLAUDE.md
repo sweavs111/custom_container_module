@@ -289,3 +289,4 @@ With `PUSH=true` (config.sh; default false, independent of `DEPLOY`), `apptainer
 - The tests pin `PUSH=false` so they can never publish.
 - New GHCR packages are private, and visibility can't be changed through the API (PATCH returns 404, verified 2026-11-17). Make each package public once in its GitHub settings.
 - Sibling repos `../custom_containeR` and `../containerPy` have their own `push.sh` and push to the same namespace with `r-`/`py-` prefixes, so names never collide.
+- The namespace is the `hurwitzlab` org (all three repos, switched 2026-11-24). Every image previously published under `sweavs111` was copied byte-for-byte to `hurwitzlab` the same day (pull from `sweavs111`, then `push_sif.sh`); the `sweavs111` copies were left in place. Only exact version tags are published — no `latest`.
